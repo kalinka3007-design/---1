@@ -1,4 +1,3 @@
-mintglow-bot/
-├── bot.py          # Основная логика бота (GigaChat + база знаний)
-├── app.py          # Flask-сервер для поддержания активности бота
-└── requirements.txt # Список библиотек
+python-telegram-bot
+requests
+Flask
