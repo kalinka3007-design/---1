@@ -365,12 +365,11 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=main_menu_keyboard())
 
 # ==============================================
-# ГЛАВНЫЙ CALLBACK
+# ГЛАВНЫЙ CALLBACK (без query.answer)
 # ==============================================
 
 async def main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     data = query.data
 
     if data == "main:menu":
@@ -445,12 +444,11 @@ async def main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 # ==============================================
-# МЕНЮ ЗАПИСИ
+# МЕНЮ ЗАПИСИ (без query.answer)
 # ==============================================
 
 async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     data = query.data
 
     if data.startswith("book:"):
@@ -569,12 +567,11 @@ async def show_service_result(query, service, back_callback):
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==============================================
-# ПОДГОТОВКА / УХОД / АКЦИИ
+# ПОДГОТОВКА / УХОД / АКЦИИ (без query.answer)
 # ==============================================
 
 async def prep_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     code = query.data.split(":", 1)[1]
     text = PREP_TEXTS.get(code, "Информация недоступна.")
     keyboard = [
@@ -586,7 +583,6 @@ async def prep_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def after_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     code = query.data.split(":", 1)[1]
     text = AFTER_TEXTS.get(code, "Информация недоступна.")
     keyboard = [
@@ -598,7 +594,6 @@ async def after_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def promo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     code = query.data.split(":", 1)[1]
 
     if code == "game":
@@ -741,12 +736,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==============================================
+# УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК КНОПОК
+# ==============================================
+
+async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Единый обработчик всех callback-кнопок."""
+    query = update.callback_query
+    data = query.data
+
+    print(f"🔘 Получен callback: {data}")
+
+    # Сначала отвечаем Telegram — это обязательно
+    try:
+        await query.answer()
+    except Exception as e:
+        print(f"⚠️ Не удалось ответить на callback: {e}")
+
+    # --- ГЛАВНОЕ МЕНЮ ---
+    if data.startswith("main:"):
+        await main_callback(update, context)
+        return
+
+    # --- МЕНЮ ЗАПИСИ ---
+    if data.startswith(("book:", "sub:", "sub2:", "srv:", "srv2:", "srv3:")):
+        await booking_callback(update, context)
+        return
+
+    # --- ПОДГОТОВКА ---
+    if data.startswith("prep:"):
+        await prep_callback(update, context)
+        return
+
+    # --- УХОД ---
+    if data.startswith("after:"):
+        await after_callback(update, context)
+        return
+
+    # --- АКЦИИ ---
+    if data.startswith("promo:"):
+        await promo_callback(update, context)
+        return
+
+    # --- НЕИЗВЕСТНЫЙ CALLBACK ---
+    print(f"⚠️ Неизвестный callback: {data}")
+
+# ==============================================
 # ЗАПУСК БОТА
 # ==============================================
 
 def run_bot():
-    # Ждём 5 секунд, чтобы предыдущий экземпляр успел завершиться
-    # Это предотвращает конфликт "terminated by other getUpdates request"
     print("⏳ Ожидание 5 секунд перед запуском...")
     time.sleep(5)
 
@@ -757,11 +795,8 @@ def run_bot():
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    app.add_handler(CallbackQueryHandler(main_callback,    pattern="^main:"))
-    app.add_handler(CallbackQueryHandler(booking_callback, pattern="^(book:|sub:|sub2:|srv:|srv2:|srv3:)"))
-    app.add_handler(CallbackQueryHandler(prep_callback,    pattern="^prep:"))
-    app.add_handler(CallbackQueryHandler(after_callback,   pattern="^after:"))
-    app.add_handler(CallbackQueryHandler(promo_callback,   pattern="^promo:"))
+    # ОДИН универсальный обработчик для всех кнопок
+    app.add_handler(CallbackQueryHandler(universal_callback))
 
     print("✅ Бот запущен!")
     app.run_polling()
