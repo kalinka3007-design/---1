@@ -1,4 +1,5 @@
 import os
+import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, MessageHandler, CommandHandler,
@@ -16,7 +17,6 @@ if not TELEGRAM_TOKEN:
 if not ADMIN_CHAT_ID:
     print("⚠️ ADMIN_CHAT_ID не задан. Уведомления администратору не будут работать.")
 
-# Преобразуем ADMIN_CHAT_ID в число один раз
 ADMIN_ID = int(ADMIN_CHAT_ID) if ADMIN_CHAT_ID else None
 
 STUDIO_CHAT_URL = "https://t.me/MintGlow_9k1"
@@ -745,6 +745,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================================
 
 def run_bot():
+    # Ждём 5 секунд, чтобы предыдущий экземпляр успел завершиться
+    # Это предотвращает конфликт "terminated by other getUpdates request"
+    print("⏳ Ожидание 5 секунд перед запуском...")
+    time.sleep(5)
+
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start_command))
