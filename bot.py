@@ -6,7 +6,6 @@ from telegram.ext import (
     CallbackQueryHandler, filters, ContextTypes
 )
 
-# Импорт всего контента из отдельного файла
 from content import (
     BOOKING, MASTERS, PREP_TEXTS, AFTER_TEXTS, PROMO_TEXTS, FAQ_TEXTS,
     DIKIDI_URL,
@@ -30,23 +29,33 @@ if not TELEGRAM_TOKEN:
 
 ADMIN_ID = int(ADMIN_CHAT_ID) if ADMIN_CHAT_ID else None
 
+# Разделы, для которых существует подготовка
+PREP_SECTIONS = ("epilation", "laser", "depilation")
+
 # ==============================================
 # УТИЛИТЫ
 # ==============================================
 
 def hp(path: str, text: str) -> str:
-    """Добавляет хлебные крошки к тексту."""
     return f"🏠 → {path}\n\n{text}"
 
 
-NAV = [
-    [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
-]
-
-
 def kb(*rows):
-    """Собирает клавиатуру из переданных строк."""
     return InlineKeyboardMarkup(list(rows))
+
+
+def prep_button(parent_code: str, back_callback: str):
+    """Возвращает строку-список с кнопкой подготовки или None.
+    
+    parent_code — epilation/laser/depilation
+    back_callback — куда вернуться при нажатии «Вернуться к записи»
+    """
+    if parent_code not in PREP_SECTIONS:
+        return None
+    return [InlineKeyboardButton(
+        "📚 Как подготовиться",
+        callback_data=f"prep_srv:{parent_code}:{back_callback}"
+    )]
 
 
 # ==============================================
@@ -55,14 +64,12 @@ def kb(*rows):
 
 async def notify_admin(update: Update, context: ContextTypes.DEFAULT_TYPE,
                        tag: str = "", extra: str = ""):
-    """Отправляет уведомление админу с пометкой."""
     if not ADMIN_ID:
         print("⚠️ ADMIN_CHAT_ID не задан")
         return False
 
     user = update.effective_user
     username = f"@{user.username}" if user.username else user.first_name or "без имени"
-
     header = f"🔔 {tag}" if tag else "🔔 Новое сообщение"
 
     try:
@@ -84,7 +91,6 @@ async def notify_admin(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 
 async def notify_admin_button(update: Update, context: ContextTypes.DEFAULT_TYPE, tag: str):
-    """Уведомление при нажатии кнопки."""
     if not ADMIN_ID:
         return
     query = update.callback_query
@@ -173,7 +179,6 @@ async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         print(f"⚠️ answer: {e}")
 
-    # ГЛАВНОЕ МЕНЮ
     if data == "main:menu":
         await show_main_menu(update, context)
         return
@@ -182,7 +187,6 @@ async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text("❌ Меню закрыто. Чтобы вернуться — напишите /start.")
         return
 
-    # --- РАЗДЕЛЫ ГЛАВНОГО МЕНЮ ---
     if data == "main:booking":
         await show_booking(update, context)
         return
@@ -211,7 +215,6 @@ async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await show_ask(update, context)
         return
 
-    # --- FAQ / АКЦИИ / УВЕДОМЛЕНИЯ ---
     if data.startswith("faq:"):
         await faq_callback(update, context)
         return
@@ -220,7 +223,6 @@ async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await promo_callback(update, context)
         return
 
-    # Уведомления-триггеры
     triggers = {
         "notify:subscription": "📦 АБОНЕМЕНТ",
         "notify:certificate": "🎁 СЕРТИФИКАТ",
@@ -238,32 +240,26 @@ async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await notify_admin_button(update, context, triggers[data])
         return
 
-    # --- ЗАПИСЬ ---
     if data.startswith(("book:", "sub:", "sub2:", "srv:", "srv2:", "srv3:")):
         await booking_callback(update, context)
         return
 
-    # --- МАСТЕРА ---
     if data.startswith("master:"):
         await master_callback(update, context)
         return
 
-    # --- ПОДГОТОВКА (включая prep_srv:) ---
     if data.startswith(("prep:", "prep_srv:")):
         await prep_callback(update, context)
         return
 
-    # --- УХОД (включая after_srv:) ---
     if data.startswith(("after:", "after_srv:")):
         await after_callback(update, context)
         return
 
-    # --- ПРАЙС ---
     if data.startswith("price:"):
         await price_callback(update, context)
         return
 
-    # --- О СТУДИИ ---
     if data.startswith("about:"):
         await about_callback(update, context)
         return
@@ -292,6 +288,7 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
 
+    # === book:CODE ===
     if data.startswith("book:"):
         code = data.split(":", 1)[1]
         cat = BOOKING.get(code)
@@ -299,19 +296,17 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ Раздел не найден.")
             return
 
-        # Категория с подкатегориями
+        # Категория с подкатегориями (лазер, депиляция, коррекция, косметология)
         if "sub" in cat:
             keyboard = []
             for sub in cat["sub"]:
                 keyboard.append([InlineKeyboardButton(sub["title"], callback_data=f"sub:{code}:{sub['code']}")])
 
             extra = []
-            if code == "laser":
-                extra.append([InlineKeyboardButton("📚 Как подготовиться к лазерной эпиляции",
-                                                   callback_data="prep:laser")])
-            elif code == "depilation":
-                extra.append([InlineKeyboardButton("📚 Как подготовиться к депиляции",
-                                                   callback_data="prep:depilation")])
+            # Кнопка подготовки
+            pb = prep_button(code, f"book:{code}")
+            if pb:
+                extra.append(pb)
 
             extra.append([InlineKeyboardButton("◀️ Назад", callback_data="main:booking")])
             await query.edit_message_text(
@@ -321,22 +316,26 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Простая категория (электроэпиляция)
+        # Простая категория (электроэпиляция — список длительностей)
         keyboard = []
         for i, s in enumerate(cat["services"]):
             keyboard.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
                                                   callback_data=f"srv:{code}:{i}")])
-        keyboard.append([InlineKeyboardButton("📚 Как подготовиться к электроэпиляции",
-                                              callback_data="prep:epilation")])
-        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="main:booking")])
+
+        extra = []
+        pb = prep_button(code, f"book:{code}")
+        if pb:
+            extra.append(pb)
+
+        extra.append([InlineKeyboardButton("◀️ Назад", callback_data="main:booking")])
         await query.edit_message_text(
             hp(f"📅 Запись → {cat['title']}",
                f"{cat['title']}\n\nВыберите длительность:"),
-            reply_markup=kb(*keyboard)
+            reply_markup=kb(*(keyboard + extra))
         )
         return
 
-    # sub:parent:sub_code
+    # === sub:PARENT:SUB ===
     if data.startswith("sub:"):
         parts = data.split(":")
         parent_code, sub_code = parts[1], parts[2]
@@ -346,27 +345,37 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ Подкатегория не найдена.")
             return
 
+        back_callback = f"sub:{parent_code}:{sub_code}"
+        extra = []
+
+        # Подготовка для этого экрана
+        pb = prep_button(parent_code, back_callback)
+        if pb:
+            extra.append(pb)
+
+        # Если есть вложенные подкатегории
         if "sub" in sub:
             keyboard = []
             for s2 in sub["sub"]:
-                keyboard.append([InlineKeyboardButton(s2["title"], callback_data=f"sub2:{parent_code}:{sub_code}:{s2['code']}")])
+                keyboard.append([InlineKeyboardButton(s2["title"],
+                                                      callback_data=f"sub2:{parent_code}:{sub_code}:{s2['code']}")])
             keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data=f"book:{parent_code}")])
+
             await query.edit_message_text(
                 hp(f"📅 Запись → {parent['title']} → {sub['title']}",
                    f"{sub['title']}\n\nВыберите:"),
-                reply_markup=kb(*keyboard)
+                reply_markup=kb(*(keyboard + extra))
             )
             return
 
+        # Список услуг внутри подкатегории
         keyboard = []
         for i, s in enumerate(sub["services"]):
             keyboard.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
                                                   callback_data=f"srv2:{parent_code}:{sub_code}:{i}")])
 
-        extra = []
-        if parent_code == "laser":
-            extra.append([InlineKeyboardButton("💬 Узнать про абонементы", url=URL_SUBSCRIPTION)])
-        elif parent_code == "body":
+        # Абонемент
+        if parent_code in ("laser", "body"):
             extra.append([InlineKeyboardButton("💬 Узнать про абонементы", url=URL_SUBSCRIPTION)])
 
         extra.append([InlineKeyboardButton("◀️ Назад", callback_data=f"book:{parent_code}")])
@@ -378,7 +387,7 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # sub2:parent:sub:sub2
+    # === sub2:PARENT:SUB:SUB2 ===
     if data.startswith("sub2:"):
         parts = data.split(":")
         parent_code, sub_code, sub2_code = parts[1], parts[2], parts[3]
@@ -386,12 +395,18 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sub = next(s for s in parent["sub"] if s["code"] == sub_code)
         sub2 = next(s for s in sub["sub"] if s["code"] == sub2_code)
 
+        back_callback = f"sub2:{parent_code}:{sub_code}:{sub2_code}"
+        extra = []
+
+        pb = prep_button(parent_code, back_callback)
+        if pb:
+            extra.append(pb)
+
         keyboard = []
         for i, s in enumerate(sub2["services"]):
             keyboard.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
                                                   callback_data=f"srv3:{parent_code}:{sub_code}:{sub2_code}:{i}")])
 
-        extra = []
         if parent_code == "laser":
             extra.append([InlineKeyboardButton("💬 Узнать про абонементы", url=URL_SUBSCRIPTION)])
 
@@ -404,7 +419,7 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # srv:code:idx — простая категория
+    # === srv / srv2 / srv3 — экран услуги ===
     if data.startswith("srv:") and data.count(":") == 2:
         parts = data.split(":")
         code, idx = parts[1], int(parts[2])
@@ -412,7 +427,6 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_service_result(query, s, f"book:{code}", code)
         return
 
-    # srv2:parent:sub:idx
     if data.startswith("srv2:"):
         parts = data.split(":")
         parent_code, sub_code, idx = parts[1], parts[2], int(parts[3])
@@ -422,7 +436,6 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_service_result(query, s, f"sub:{parent_code}:{sub_code}", parent_code)
         return
 
-    # srv3:parent:sub:sub2:idx
     if data.startswith("srv3:"):
         parts = data.split(":")
         parent_code, sub_code, sub2_code, idx = parts[1], parts[2], parts[3], int(parts[4])
@@ -463,19 +476,12 @@ async def show_service_result(query, service, back_callback, parent_code):
         [InlineKeyboardButton("📅 Открыть календарь записи", url=service["url"])],
     ]
 
-    # Кнопка подготовки с информацией о том, откуда пришли
-    prep_map = {
-        "epilation":  "epilation",
-        "laser":      "laser",
-        "depilation": "depilation",
-    }
-    if parent_code in prep_map:
-        prep_code = prep_map[parent_code]
-        keyboard.append([InlineKeyboardButton(
-            "📚 Как подготовиться",
-            callback_data=f"prep_srv:{prep_code}:{back_callback}"
-        )])
+    # Подготовка
+    pb = prep_button(parent_code, back_callback)
+    if pb:
+        keyboard.append(pb)
 
+    # Абонемент
     if parent_code in ("laser", "body"):
         keyboard.append([InlineKeyboardButton("💬 Узнать про абонементы", url=URL_SUBSCRIPTION)])
 
@@ -511,13 +517,10 @@ async def prep_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
 
-    # Определяем, откуда пришли
     from_service = False
     back_to_service = None
 
     if data.startswith("prep_srv:"):
-        # Формат: prep_srv:{code}:{back_callback}
-        # back_callback может содержать «:» — разделяем только по первым двум
         parts = data.split(":", 2)
         code = parts[1]
         back_to_service = parts[2]
@@ -536,7 +539,6 @@ async def prep_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
 
-    # Верхняя кнопка — вернуться к записи (если пришли из услуги)
     if from_service and back_to_service:
         keyboard.append([InlineKeyboardButton(
             "◀️ Вернуться к записи",
@@ -756,13 +758,8 @@ async def price_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📅 Записаться", callback_data="main:booking")],
     ]
 
-    prep_map = {
-        "epilation": "prep:epilation",
-        "laser":     "prep:laser",
-        "depilation":"prep:depilation",
-    }
-    if code in prep_map:
-        keyboard.append([InlineKeyboardButton("📚 Как подготовиться", callback_data=prep_map[code])])
+    if code in PREP_SECTIONS:
+        keyboard.append([InlineKeyboardButton("📚 Как подготовиться", callback_data=f"prep:{code}")])
 
     if code in ("laser", "body"):
         keyboard.append([InlineKeyboardButton("💬 Узнать про абонементы", url=URL_SUBSCRIPTION)])
@@ -876,7 +873,6 @@ async def about_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data.split(":", 1)[1]
 
-    # --- Мастера ---
     if data == "masters":
         keyboard = []
         for code, m in MASTERS.items():
@@ -889,7 +885,6 @@ async def about_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Как добраться ---
     if data == "route":
         text = (
             "📍 Адрес\n"
@@ -914,7 +909,6 @@ async def about_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Оставить отзыв ---
     if data == "review":
         text = (
             "⭐ Ваше мнение очень важно!\n\n"
@@ -938,7 +932,6 @@ async def about_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Соцсети ---
     if data == "social":
         text = (
             "📢 Мы в соцсетях\n\n"
@@ -958,7 +951,6 @@ async def about_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- FAQ ---
     if data == "faq":
         keyboard = [
             [InlineKeyboardButton("Как можно оплатить?", callback_data="faq:pay")],
@@ -975,7 +967,6 @@ async def about_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Отзывы клиентов ---
     if data == "client_reviews":
         text = (
             "📖 Отзывы клиентов\n\n"
