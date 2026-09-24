@@ -799,4 +799,4 @@ def run_bot():
     app.add_handler(CallbackQueryHandler(universal_callback))
 
     print("✅ Бот запущен!")
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
