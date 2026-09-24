@@ -248,15 +248,17 @@ async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await master_callback(update, context)
         return
 
-    # --- ПОДГОТОВКА / УХОД / ПРАЙС ---
-    if data.startswith("prep:"):
+    # --- ПОДГОТОВКА (включая prep_srv:) ---
+    if data.startswith(("prep:", "prep_srv:")):
         await prep_callback(update, context)
         return
 
-    if data.startswith("after:"):
+    # --- УХОД (включая after_srv:) ---
+    if data.startswith(("after:", "after_srv:")):
         await after_callback(update, context)
         return
 
+    # --- ПРАЙС ---
     if data.startswith("price:"):
         await price_callback(update, context)
         return
@@ -303,7 +305,6 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for sub in cat["sub"]:
                 keyboard.append([InlineKeyboardButton(sub["title"], callback_data=f"sub:{code}:{sub['code']}")])
 
-            # Дополнительные кнопки для лазера/депиляции
             extra = []
             if code == "laser":
                 extra.append([InlineKeyboardButton("📚 Как подготовиться к лазерной эпиляции",
@@ -345,7 +346,6 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ Подкатегория не найдена.")
             return
 
-        # Подкатегория с подподкатегориями
         if "sub" in sub:
             keyboard = []
             for s2 in sub["sub"]:
@@ -358,14 +358,12 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Подкатегория со списком услуг
         keyboard = []
         for i, s in enumerate(sub["services"]):
             keyboard.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
                                                   callback_data=f"srv2:{parent_code}:{sub_code}:{i}")])
 
         extra = []
-        # Кнопка абонемента для лазера и коррекции фигуры
         if parent_code == "laser":
             extra.append([InlineKeyboardButton("💬 Узнать про абонементы", url=URL_SUBSCRIPTION)])
         elif parent_code == "body":
@@ -443,12 +441,10 @@ async def show_service_result(query, service, back_callback, parent_code):
         "",
     ]
 
-    # Дополнительная информация для комплексов
     duration = service.get("duration")
     if duration:
         text_lines.append(f"⏱ Длительность: {duration}")
 
-    # Состав комплекса (из названия в скобках)
     if "(" in service["name"] and ")" in service["name"]:
         inside = service["name"][service["name"].find("(")+1:service["name"].rfind(")")]
         if inside:
@@ -467,16 +463,19 @@ async def show_service_result(query, service, back_callback, parent_code):
         [InlineKeyboardButton("📅 Открыть календарь записи", url=service["url"])],
     ]
 
-    # Кнопка подготовки для родительской категории
+    # Кнопка подготовки с информацией о том, откуда пришли
     prep_map = {
-        "epilation": "prep:epilation",
-        "laser":     "prep:laser",
-        "depilation":"prep:depilation",
+        "epilation":  "epilation",
+        "laser":      "laser",
+        "depilation": "depilation",
     }
     if parent_code in prep_map:
-        keyboard.append([InlineKeyboardButton("📚 Как подготовиться", callback_data=prep_map[parent_code])])
+        prep_code = prep_map[parent_code]
+        keyboard.append([InlineKeyboardButton(
+            "📚 Как подготовиться",
+            callback_data=f"prep_srv:{prep_code}:{back_callback}"
+        )])
 
-    # Абонемент — над "Назад"
     if parent_code in ("laser", "body"):
         keyboard.append([InlineKeyboardButton("💬 Узнать про абонементы", url=URL_SUBSCRIPTION)])
 
@@ -510,21 +509,47 @@ async def show_prep_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def prep_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    code = query.data.split(":", 1)[1]
+    data = query.data
+
+    # Определяем, откуда пришли
+    from_service = False
+    back_to_service = None
+
+    if data.startswith("prep_srv:"):
+        # Формат: prep_srv:{code}:{back_callback}
+        # back_callback может содержать «:» — разделяем только по первым двум
+        parts = data.split(":", 2)
+        code = parts[1]
+        back_to_service = parts[2]
+        from_service = True
+    else:
+        code = data.split(":", 1)[1]
+
     text = PREP_TEXTS.get(code, "Информация недоступна.")
 
     titles = {
-        "epilation": "электроэпиляции",
-        "laser": "лазерной эпиляции",
+        "epilation":  "электроэпиляции",
+        "laser":      "лазерной эпиляции",
         "depilation": "депиляции",
     }
     after_title = titles.get(code, "процедуры")
 
-    keyboard = [
-        [InlineKeyboardButton(f"💆 Уход после {after_title}", callback_data=f"after:{code}")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="main:prep")],
-        [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
-    ]
+    keyboard = []
+
+    # Верхняя кнопка — вернуться к записи (если пришли из услуги)
+    if from_service and back_to_service:
+        keyboard.append([InlineKeyboardButton(
+            "◀️ Вернуться к записи",
+            callback_data=back_to_service
+        )])
+
+    keyboard.append([InlineKeyboardButton(
+        f"💆 Уход после {after_title}",
+        callback_data=f"after_srv:{code}:{back_to_service}" if from_service else f"after:{code}"
+    )])
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="main:prep")])
+    keyboard.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+
     await query.edit_message_text(
         hp(f"📚 Подготовка → {after_title}", text),
         reply_markup=kb(*keyboard)
@@ -551,21 +576,43 @@ async def show_after_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def after_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    code = query.data.split(":", 1)[1]
+    data = query.data
+
+    from_service = False
+    back_to_service = None
+
+    if data.startswith("after_srv:"):
+        parts = data.split(":", 2)
+        code = parts[1]
+        back_to_service = parts[2]
+        from_service = True
+    else:
+        code = data.split(":", 1)[1]
+
     text = AFTER_TEXTS.get(code, "Информация недоступна.")
 
     titles = {
-        "epilation": "электроэпиляции",
-        "laser": "лазерной эпиляции",
+        "epilation":  "электроэпиляции",
+        "laser":      "лазерной эпиляции",
         "depilation": "депиляции",
     }
     prep_title = titles.get(code, "процедуры")
 
-    keyboard = [
-        [InlineKeyboardButton(f"📚 Подготовка к {prep_title}", callback_data=f"prep:{code}")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="main:after")],
-        [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
-    ]
+    keyboard = []
+
+    if from_service and back_to_service:
+        keyboard.append([InlineKeyboardButton(
+            "◀️ Вернуться к записи",
+            callback_data=back_to_service
+        )])
+
+    keyboard.append([InlineKeyboardButton(
+        f"📚 Подготовка к {prep_title}",
+        callback_data=f"prep_srv:{code}:{back_to_service}" if from_service else f"prep:{code}"
+    )])
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="main:after")])
+    keyboard.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+
     await query.edit_message_text(
         hp(f"💆 Уход → {prep_title}", text),
         reply_markup=kb(*keyboard)
@@ -709,7 +756,6 @@ async def price_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📅 Записаться", callback_data="main:booking")],
     ]
 
-    # Кнопка подготовки для соответствующих разделов
     prep_map = {
         "epilation": "prep:epilation",
         "laser":     "prep:laser",
@@ -718,7 +764,6 @@ async def price_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if code in prep_map:
         keyboard.append([InlineKeyboardButton("📚 Как подготовиться", callback_data=prep_map[code])])
 
-    # Абонемент — над "Назад"
     if code in ("laser", "body"):
         keyboard.append([InlineKeyboardButton("💬 Узнать про абонементы", url=URL_SUBSCRIPTION)])
 
@@ -759,7 +804,6 @@ async def promo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = PROMO_TEXTS.get(code, "Информация недоступна.")
 
-    # Клавиатура зависит от раздела
     if code == "game":
         keyboard = [
             [InlineKeyboardButton("💬 Узнать количество бонусов", url=URL_BONUS_BALANCE)],
@@ -975,7 +1019,6 @@ async def faq_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     code = query.data.split(":", 1)[1]
 
-    # Контакт — отдельный экран
     if code == "contact":
         text = (
             f"📞 {PHONE_DISPLAY}\n"
@@ -994,10 +1037,8 @@ async def faq_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Тексты
     text = FAQ_TEXTS.get(code, "Информация недоступна.")
 
-    # Клавиатура
     if code == "cancel":
         keyboard = [
             [InlineKeyboardButton("🔄 Перенести запись", url=URL_TRANSFER)],
@@ -1058,7 +1099,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     text_lower = user_text.lower()
 
-    # Ключевые слова → разделы
     if any(k in text_lower for k in ["записаться", "запись", "запишите"]):
         keyboard = []
         for code, cat in BOOKING.items():
@@ -1115,7 +1155,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Всё остальное — уведомляем админа
     sent = await notify_admin(update, context, tag="", extra=f"💬 Сообщение: {user_text}")
 
     if sent:
