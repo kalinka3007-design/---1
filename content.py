@@ -13,17 +13,15 @@
 from urllib.parse import quote
 
 # ==============================================
-# НАСТРОЙКИ
+# НАСТРОЙКИ И ССЫЛКИ
 # ==============================================
 STUDIO_CHAT_BASE = "https://t.me/MintGlow_9k1"
 
 def chat_url(text=""):
-    """Возвращает ссылку на бизнес-чат с предзаполненным текстом."""
     if not text:
         return STUDIO_CHAT_BASE
     return f"{STUDIO_CHAT_BASE}?text={quote(text)}"
 
-# Готовые ссылки с автоподстановкой
 URL_BONUS_BALANCE = chat_url("Здравствуйте! Хочу узнать баланс бонусов.")
 URL_CERTIFICATE   = chat_url("Здравствуйте! Хочу купить подарочный сертификат.")
 URL_SUBSCRIPTION  = chat_url("Здравствуйте! Интересует абонемент.")
@@ -36,31 +34,22 @@ URL_LATE          = chat_url("Здравствуйте! Я опаздываю н
 URL_SAME_DAY      = chat_url("Здравствуйте! Хочу записаться на сегодня.")
 URL_QUESTION      = chat_url("Здравствуйте! У меня вопрос.")
 
-# Ссылка на запись в DiKidi
 DIKIDI_URL = "https://dikidi.ru/1330084?p=2.pi-po-sm&o=1"
 
-# Ссылки на отзывы
 URL_REVIEW_YANDEX = "https://clck.ru/3Ve8tD"
 URL_REVIEW_Zoon   = "https://clck.ru/3UP7Zk"
 URL_REVIEW_2GIS   = "https://clck.ru/3UP9jH"
 URL_REVIEW_GOOGLE = "https://clck.ru/3Vu3uy"
 
-# Ссылки на карты
 URL_MAPS_YANDEX   = "https://clck.ru/3W4kYz"
 URL_MAPS_GOOGLE   = "https://clck.ru/3W4kQh"
-
-# Ссылка на фото входа
 URL_ENTRANCE_PHOTO = "https://clck.ru/3W5Bn6"
-
-# Ссылка на отзывы клиентов
 URL_CLIENT_REVIEWS = "https://clck.ru/3W4sgS"
 
-# Соцсети
 URL_TELEGRAM_CHANNEL = "https://t.me/elektroepil_mint"
 URL_INSTAGRAM        = "https://www.instagram.com/mintglow_voika"
 URL_VK               = "https://vk.com/sugar_voikovskaya"
 
-# Контакты
 PHONE_DISPLAY = "+7 916 758 51 41"
 PHONE_TEL     = "tel:+79167585141"
 URL_WHATSAPP  = "https://wa.me/79167585141"
@@ -143,10 +132,10 @@ BOOKING = {
                     {"name": "Руки полностью", "price": "от 1 200 ₽", "url": "https://dkd.su/1330084/s/20820113"},
                 ]},
                 {"code": "dep_down", "title": "⬇️ Ниже пояса", "services": [
-                    {"name": "Ноги до колена",                        "price": "от 1 200 ₽", "url": "https://dkd.su/1330084/s/20820123"},
-                    {"name": "Ноги полностью",                        "price": "от 1 800 ₽", "url": "https://dkd.su/1330084/s/20820125"},
-                    {"name": "Бедро (выше колена)",                   "price": "от 1 000 ₽", "url": "https://dkd.su/1330084/s/20820116"},
-                    {"name": "Ягодицы",                               "price": "от 1 000 ₽", "url": "https://dkd.su/1330084/s/20091"},
+                    {"name": "Ноги до колена",  "price": "от 1 200 ₽", "url": "https://dkd.su/1330084/s/20820123"},
+                    {"name": "Ноги полностью",  "price": "от 1 800 ₽", "url": "https://dkd.su/1330084/s/20820125"},
+                    {"name": "Бедро (выше колена)", "price": "от 1 000 ₽", "url": "https://dkd.su/1330084/s/20820116"},
+                    {"name": "Ягодицы",         "price": "от 1 000 ₽", "url": "https://dkd.su/1330084/s/20820091"},
                 ]},
             ]},
         ]
@@ -403,13 +392,16 @@ PROMO_TEXTS = {
     "subscriptions": (
         "📦 Абонементы MintGlow\n\n"
         "Покупая курс процедур, вы экономите и фиксируете цену.\n\n"
-        "💡 Лазерная эпиляция:\n"
-        "• 5 процедур — скидка 5%\n"
-        "• 10 процедур — скидка 15%\n\n"
-        "🔸 Коррекция фигуры:\n"
-        "• 5 процедур — скидка 5%\n"
-        "• 10 процедур — скидка 15%\n\n"
-        "📌 Подробности и расчёт стоимости — у администратора."
+        "🎁 Скидка при покупке курса:\n"
+        "• 5 процедур — 5%\n"
+        "• 10 процедур — 15%\n\n"
+        "📊 Пример экономии на «Лазерная эпиляция. Бикини глубокое» (от 2 000 ₽):\n"
+        "• 5 процедур: от 9 500 ₽ (экономия около 500 ₽)\n"
+        "• 10 процедур: от 17 000 ₽ (экономия около 3 000 ₽)\n\n"
+        "📌 Абонементы действуют на:\n"
+        "• Лазерную эпиляцию (комплексы и отдельные зоны)\n"
+        "• Коррекцию фигуры (комплексы и отдельные процедуры)\n\n"
+        "📌 Точный расчёт — у администратора."
     ),
     "bonus": (
         "💰 Мои бонусы\n\n"
@@ -452,7 +444,7 @@ PROMO_TEXTS = {
 }
 
 # ==============================================
-# FAQ — ОТВЕТЫ ПРО ЗАПИСЬ И ОПЛАТУ
+# FAQ
 # ==============================================
 FAQ_TEXTS = {
     "pay": (
