@@ -9,11 +9,13 @@ from telegram.ext import (
 
 from content import (
     BOOKING, MASTERS, PREP_TEXTS, AFTER_TEXTS, PROMO_TEXTS, FAQ_TEXTS,
+    ADDRESS_TEXT, ABONEMENT_SECTIONS,
     DIKIDI_URL,
     URL_BONUS_BALANCE, URL_CERTIFICATE, URL_SUBSCRIPTION,
     URL_FRIEND, URL_REVIEW, URL_PAYMENT, URL_TRANSFER, URL_CANCEL,
-    URL_LATE, URL_SAME_DAY, URL_QUESTION,
+    URL_LATE, URL_SAME_DAY, URL_QUESTION, URL_NEW_MASTER, URL_OPEN_DOORS,
     URL_REVIEW_YANDEX, URL_REVIEW_Zoon, URL_REVIEW_2GIS, URL_REVIEW_GOOGLE,
+    URL_REVIEW_STILISTIC,
     URL_MAPS_YANDEX, URL_MAPS_GOOGLE, URL_ENTRANCE_PHOTO, URL_CLIENT_REVIEWS,
     URL_TELEGRAM_CHANNEL, URL_INSTAGRAM, URL_VK,
     PHONE_DISPLAY, PHONE_TEL, URL_WHATSAPP, URL_MAX,
@@ -32,7 +34,6 @@ if not TELEGRAM_TOKEN:
 ADMIN_ID = int(ADMIN_CHAT_ID) if ADMIN_CHAT_ID else None
 
 PREP_SECTIONS = ("epilation", "laser", "depilation")
-ABONEMENT_SECTIONS = ("laser", "body")
 
 # ==============================================
 # УТИЛИТЫ
@@ -47,7 +48,6 @@ def kb(*rows):
 
 
 def parse_price(price_str: str) -> int:
-    """Извлекает первое число из строки цены: 'от 2 000 ₽' → 2000."""
     main_part = price_str.split("/")[0]
     nums = re.findall(r"\d+", main_part)
     if nums:
@@ -56,18 +56,18 @@ def parse_price(price_str: str) -> int:
 
 
 def format_money(n: int) -> str:
-    """Форматирует число: 9500 → '9 500'."""
     return f"{n:,}".replace(",", " ")
 
 
 def find_service(back_callback: str):
-    """Возвращает (service_dict, parent_code) по callback_data экрана услуги."""
+    """Возвращает (service_dict, parent_code, breadcrumb) по callback_data."""
     parts = back_callback.split(":")
 
     if parts[0] == "srv" and len(parts) >= 3:
         code = parts[1]
         idx = int(parts[2])
-        return BOOKING[code]["services"][idx], code
+        cat = BOOKING[code]
+        return cat["services"][idx], code, cat["title"]
 
     if parts[0] == "srv2" and len(parts) >= 4:
         parent_code = parts[1]
@@ -75,7 +75,7 @@ def find_service(back_callback: str):
         idx = int(parts[3])
         parent = BOOKING[parent_code]
         sub = next(s for s in parent["sub"] if s["code"] == sub_code)
-        return sub["services"][idx], parent_code
+        return sub["services"][idx], parent_code, f"{parent['title']} → {sub['title']}"
 
     if parts[0] == "srv3" and len(parts) >= 5:
         parent_code = parts[1]
@@ -85,9 +85,20 @@ def find_service(back_callback: str):
         parent = BOOKING[parent_code]
         sub = next(s for s in parent["sub"] if s["code"] == sub_code)
         sub2 = next(s for s in sub["sub"] if s["code"] == sub2_code)
-        return sub2["services"][idx], parent_code
+        return sub2["services"][idx], parent_code, f"{parent['title']} → {sub2['title']}"
 
-    return None, None
+    return None, None, None
+
+
+def get_parent_short_name(parent_code):
+    """Короткое название родительской категории для сообщений."""
+    return {
+        "laser":  "лазерную эпиляцию",
+        "body":   "эстетику тела",
+        "epilation": "электроэпиляцию",
+        "depilation": "депиляцию",
+        "cosmetology": "эстетику лица",
+    }.get(parent_code, parent_code)
 
 
 # ==============================================
@@ -99,11 +110,9 @@ async def notify_admin(update: Update, context: ContextTypes.DEFAULT_TYPE,
     if not ADMIN_ID:
         print("⚠️ ADMIN_CHAT_ID не задан")
         return False
-
     user = update.effective_user
     username = f"@{user.username}" if user.username else user.first_name or "без имени"
     header = f"🔔 {tag}" if tag else "🔔 Новое сообщение"
-
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
@@ -128,7 +137,6 @@ async def notify_admin_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     user = query.from_user
     username = f"@{user.username}" if user.username else user.first_name or "без имени"
-
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
@@ -170,13 +178,13 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main_menu_keyboard():
     return kb(
-        [InlineKeyboardButton("📅 Хочу записаться",                     callback_data="main:booking")],
-        [InlineKeyboardButton("📚 Подготовка к эпиляции",               callback_data="main:prep")],
-        [InlineKeyboardButton("💆 Уход после эпиляции",                 callback_data="main:after")],
-        [InlineKeyboardButton("📋 Прайс-лист",                          callback_data="main:price")],
-        [InlineKeyboardButton("🎁 Акции и бонусы",                      callback_data="main:promo")],
-        [InlineKeyboardButton("ℹ️ О студии",                            callback_data="main:about")],
-        [InlineKeyboardButton("✍️ Задать вопрос",                       callback_data="main:ask")],
+        [InlineKeyboardButton("📅 Хочу записаться",         callback_data="main:booking")],
+        [InlineKeyboardButton("📚 Подготовка к эпиляции",   callback_data="main:prep")],
+        [InlineKeyboardButton("💆 Уход после эпиляции",     callback_data="main:after")],
+        [InlineKeyboardButton("📋 Прайс-лист",              callback_data="main:price")],
+        [InlineKeyboardButton("🎁 Акции и бонусы",          callback_data="main:promo")],
+        [InlineKeyboardButton("ℹ️ О студии",                callback_data="main:about")],
+        [InlineKeyboardButton("✍️ Задать вопрос",           callback_data="main:ask")],
     )
 
 
@@ -212,12 +220,10 @@ async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         print(f"⚠️ answer: {e}")
 
-    # --- ГЛАВНОЕ МЕНЮ ---
     if data == "main:menu":
         await show_main_menu(update, context)
         return
 
-    # --- Разделы главного меню ---
     if data == "main:booking":
         await show_booking(update, context)
         return
@@ -246,7 +252,6 @@ async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await show_ask(update, context)
         return
 
-    # --- FAQ, Промо, уведомления ---
     if data.startswith("faq:"):
         await faq_callback(update, context)
         return
@@ -272,7 +277,6 @@ async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await notify_admin_button(update, context, triggers[data])
         return
 
-    # --- Абонемент ---
     if data.startswith("sub_calc:"):
         await show_subscription_calc(update, context)
         return
@@ -281,32 +285,26 @@ async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await process_buy_subscription(update, context)
         return
 
-    # --- Запись ---
-    if data.startswith(("book:", "sub:", "sub2:", "srv:", "srv2:", "srv3:")):
+    if data.startswith(("book:", "srv:", "srv2:", "srv3:")):
         await booking_callback(update, context)
         return
 
-    # --- Мастера ---
     if data.startswith("master:"):
         await master_callback(update, context)
         return
 
-    # --- Подготовка (prep / prep_srv) ---
     if data.startswith(("prep:", "prep_srv:")):
         await prep_callback(update, context)
         return
 
-    # --- Уход (after / after_srv) ---
     if data.startswith(("after:", "after_srv:")):
         await after_callback(update, context)
         return
 
-    # --- Прайс ---
     if data.startswith("price:"):
         await price_callback(update, context)
         return
 
-    # --- О студии ---
     if data.startswith("about:"):
         await about_callback(update, context)
         return
@@ -334,7 +332,7 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
 
-    # ===== book:CODE =====
+    # === book:CODE ===
     if data.startswith("book:"):
         code = data.split(":", 1)[1]
         cat = BOOKING.get(code)
@@ -342,50 +340,37 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ Раздел не найден.")
             return
 
-        if "sub" in cat:
-            keyboard = []
-            for sub in cat["sub"]:
-                keyboard.append([InlineKeyboardButton(sub["title"], callback_data=f"sub:{code}:{sub['code']}")])
-
-            extra = []
-            if code in PREP_SECTIONS:
-                extra.append([InlineKeyboardButton(
-                    "📚 Как подготовиться",
-                    callback_data=f"prep:{code}"
-                )])
-
-            extra.append([InlineKeyboardButton("◀️ Вернуться к выбору типа услуги", callback_data="main:booking")])
-
-            await query.edit_message_text(
-                hp(f"📅 Хочу записаться → {cat['title']}",
-                   f"{cat['title']}\n\nВыберите категорию:"),
-                reply_markup=kb(*(keyboard + extra))
-            )
-            return
-
-        # Простая категория (электроэпиляция)
-        keyboard = []
-        for i, s in enumerate(cat["services"]):
-            keyboard.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
-                                                  callback_data=f"srv:{code}:{i}")])
-
         extra = []
         if code in PREP_SECTIONS:
             extra.append([InlineKeyboardButton(
                 "📚 Как подготовиться",
                 callback_data=f"prep:{code}"
             )])
+        extra.append([InlineKeyboardButton("◀️ Вернуться к выбору услуги", callback_data="main:booking")])
 
-        extra.append([InlineKeyboardButton("◀️ Вернуться к выбору типа услуги", callback_data="main:booking")])
+        if "sub" in cat:
+            keyboard = []
+            for sub in cat["sub"]:
+                keyboard.append([InlineKeyboardButton(sub["title"], callback_data=f"sub:{code}:{sub['code']}")])
+            await query.edit_message_text(
+                hp(f"📅 Хочу записаться → {cat['title']}",
+                   f"{cat['title']}\n\nВыберите раздел:"),
+                reply_markup=kb(*(keyboard + extra))
+            )
+            return
 
+        keyboard = []
+        for i, s in enumerate(cat["services"]):
+            keyboard.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
+                                                  callback_data=f"srv:{code}:{i}")])
         await query.edit_message_text(
             hp(f"📅 Хочу записаться → {cat['title']}",
-               f"{cat['title']}\n\nВыберите длительность:"),
+               f"{cat['title']}\n\nВыберите услугу:"),
             reply_markup=kb(*(keyboard + extra))
         )
         return
 
-    # ===== sub:PARENT:SUB =====
+    # === sub:PARENT:SUB ===
     if data.startswith("sub:"):
         parts = data.split(":")
         parent_code, sub_code = parts[1], parts[2]
@@ -401,29 +386,13 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📚 Как подготовиться",
                 callback_data=f"prep:{parent_code}"
             )])
-
-        if "sub" in sub:
-            keyboard = []
-            for s2 in sub["sub"]:
-                keyboard.append([InlineKeyboardButton(s2["title"],
-                                                      callback_data=f"sub2:{parent_code}:{sub_code}:{s2['code']}")])
-            keyboard.append([InlineKeyboardButton(f"◀️ Вернуться к {parent['title']}",
-                                                  callback_data=f"book:{parent_code}")])
-
-            await query.edit_message_text(
-                hp(f"📅 Хочу записаться → {parent['title']} → {sub['title']}",
-                   f"{sub['title']}\n\nВыберите категорию:"),
-                reply_markup=kb(*(keyboard + extra))
-            )
-            return
+        extra.append([InlineKeyboardButton(f"◀️ Вернуться к {parent['title']}",
+                                           callback_data=f"book:{parent_code}")])
 
         keyboard = []
         for i, s in enumerate(sub["services"]):
             keyboard.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
                                                   callback_data=f"srv2:{parent_code}:{sub_code}:{i}")])
-
-        keyboard.append([InlineKeyboardButton(f"◀️ Вернуться к {parent['title']}",
-                                              callback_data=f"book:{parent_code}")])
 
         await query.edit_message_text(
             hp(f"📅 Хочу записаться → {parent['title']} → {sub['title']}",
@@ -432,37 +401,7 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ===== sub2:PARENT:SUB:SUB2 =====
-    if data.startswith("sub2:"):
-        parts = data.split(":")
-        parent_code, sub_code, sub2_code = parts[1], parts[2], parts[3]
-        parent = BOOKING[parent_code]
-        sub = next(s for s in parent["sub"] if s["code"] == sub_code)
-        sub2 = next(s for s in sub["sub"] if s["code"] == sub2_code)
-
-        extra = []
-        if parent_code in PREP_SECTIONS:
-            extra.append([InlineKeyboardButton(
-                "📚 Как подготовиться",
-                callback_data=f"prep:{parent_code}"
-            )])
-
-        keyboard = []
-        for i, s in enumerate(sub2["services"]):
-            keyboard.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
-                                                  callback_data=f"srv3:{parent_code}:{sub_code}:{sub2_code}:{i}")])
-
-        keyboard.append([InlineKeyboardButton(f"◀️ Вернуться к {sub['title']}",
-                                              callback_data=f"sub:{parent_code}:{sub_code}")])
-
-        await query.edit_message_text(
-            hp(f"📅 Хочу записаться → {parent['title']} → {sub2['title']}",
-               f"{sub2['title']}\n\nВыберите:"),
-            reply_markup=kb(*(keyboard + extra))
-        )
-        return
-
-    # ===== srv / srv2 / srv3 =====
+    # === srv / srv2 / srv3 — экран услуги ===
     if data.startswith("srv:") and data.count(":") == 2:
         parts = data.split(":")
         code, idx = parts[1], int(parts[2])
@@ -470,7 +409,7 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_service_result(
             query, s,
             back_callback=f"book:{code}",
-            back_title="выбору типа услуги" if False else f"{BOOKING[code]['title']}",
+            back_title=_back_title_for(code),
             parent_code=code,
             breadcrumb=f"📅 Хочу записаться → {BOOKING[code]['title']}"
         )
@@ -491,25 +430,18 @@ async def booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if data.startswith("srv3:"):
-        parts = data.split(":")
-        parent_code, sub_code, sub2_code, idx = parts[1], parts[2], parts[3], int(parts[4])
-        parent = BOOKING[parent_code]
-        sub = next(s for s in parent["sub"] if s["code"] == sub_code)
-        sub2 = next(s for s in sub["sub"] if s["code"] == sub2_code)
-        s = sub2["services"][idx]
-        await show_service_result(
-            query, s,
-            back_callback=f"sub2:{parent_code}:{sub_code}:{sub2_code}",
-            back_title=sub2["title"],
-            parent_code=parent_code,
-            breadcrumb=f"📅 Хочу записаться → {parent['title']} → {sub2['title']}"
-        )
-        return
+
+def _back_title_for(code):
+    return {
+        "epilation":  "выбору длительности",
+        "laser":      "выбору зоны",
+        "depilation": "выбору зоны",
+        "body":       "выбору процедуры",
+        "cosmetology":"эстетике лица",
+    }.get(code, "назад")
 
 
 async def show_service_result(query, service, back_callback, back_title, parent_code, breadcrumb):
-    """Экран с результатом — ссылка на DiKidi."""
     text_lines = [f"✅ {service['name']} — {service['price']}", ""]
 
     duration = service.get("duration")
@@ -518,7 +450,7 @@ async def show_service_result(query, service, back_callback, back_title, parent_
 
     if "(" in service["name"] and ")" in service["name"]:
         inside = service["name"][service["name"].find("(")+1:service["name"].rfind(")")]
-        if inside:
+        if inside and not inside.startswith(("30", "60", "1 ", "2 ")):
             text_lines.append("")
             text_lines.append("Состав:")
             text_lines.append(f"• {inside}")
@@ -534,7 +466,7 @@ async def show_service_result(query, service, back_callback, back_title, parent_
         [InlineKeyboardButton("📅 Открыть календарь записи", url=service["url"])],
     ]
 
-    # Абонемент — только для конкретных услуг лазера и коррекции фигуры
+    # Абонемент — только для лазера и эстетики тела
     if parent_code in ABONEMENT_SECTIONS:
         keyboard.append([InlineKeyboardButton(
             "📦 Узнать про абонемент",
@@ -562,12 +494,10 @@ async def show_service_result(query, service, back_callback, back_title, parent_
 # ==============================================
 
 async def show_subscription_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Экран расчёта абонемента для конкретной услуги."""
     query = update.callback_query
-    # sub_calc:{back_callback}
     back_callback = query.data.split(":", 1)[1]
 
-    service, parent_code = find_service(back_callback)
+    service, parent_code, _ = find_service(back_callback)
     if not service:
         await query.edit_message_text("⚠️ Услуга не найдена.")
         return
@@ -582,9 +512,6 @@ async def show_subscription_calc(update: Update, context: ContextTypes.DEFAULT_T
     save_5 = price * 5 - sum_5
     save_10 = price * 10 - sum_10
 
-    parent = BOOKING[parent_code]
-    parent_title = parent["title"]
-
     text = (
         f"📦 Абонемент на «{service['name']}»\n\n"
         f"Цена одной процедуры — {service['price']}.\n\n"
@@ -598,28 +525,29 @@ async def show_subscription_calc(update: Update, context: ContextTypes.DEFAULT_T
         f"📌 Точная стоимость — у администратора."
     )
 
+    # Убираем скобки с длительностью из названия для кнопки
+    short_name = service['name'].split(' (')[0].lower()
+
     keyboard = [
-        [InlineKeyboardButton("💬 Купить 5 процедур", callback_data=f"buy:5:{back_callback}")],
-        [InlineKeyboardButton("💬 Купить 10 процедур", callback_data=f"buy:10:{back_callback}")],
-        [InlineKeyboardButton(f"◀️ Вернуться к {service['name'].split(' (')[0].lower()}", callback_data=back_callback)],
+        [InlineKeyboardButton("💬 Хочу купить 5 процедур", callback_data=f"buy:5:{back_callback}")],
+        [InlineKeyboardButton("💬 Хочу купить 10 процедур", callback_data=f"buy:10:{back_callback}")],
+        [InlineKeyboardButton(f"◀️ Вернуться к {short_name}", callback_data=back_callback)],
         [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
     ]
 
     await query.edit_message_text(
-        hp(f"📅 Хочу записаться → {parent_title} → Абонемент", text),
+        hp("📅 Хочу записаться → Абонемент", text),
         reply_markup=kb(*keyboard)
     )
 
 
 async def process_buy_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка кнопок «Купить 5 / 10 процедур»."""
     query = update.callback_query
-    # buy:{count}:{back_callback}
     parts = query.data.split(":", 2)
     count = int(parts[1])
     back_callback = parts[2]
 
-    service, parent_code = find_service(back_callback)
+    service, parent_code, breadcrumb = find_service(back_callback)
     if not service:
         await query.edit_message_text("⚠️ Услуга не найдена.")
         return
@@ -628,21 +556,18 @@ async def process_buy_subscription(update: Update, context: ContextTypes.DEFAULT
     coeff = 0.95 if count == 5 else 0.85
     total = round(price * count * coeff)
 
-    parent = BOOKING[parent_code]
-    parent_title = parent["title"]
+    parent_label = get_parent_short_name(parent_code)
 
-    # Уведомление админу с деталями
     extra = (
         f"💬 Услуга: {service['name']}\n"
-        f"📊 Категория: {parent_title}\n"
+        f"📊 Категория: {breadcrumb}\n"
         f"🔢 Количество: {count} процедур\n"
         f"💰 Сумма: {format_money(total)} ₽"
     )
     await notify_admin_button(update, context, "📦 АБОНЕМЕНТ", extra)
 
-    # Текст для бизнес-чата
     message_text = (
-        f"Хочу приобрести абонемент на {parent_title.lower()} "
+        f"Хочу приобрести абонемент на {parent_label} "
         f"«{service['name']}» — {count} процедур за {format_money(total)} ₽."
     )
     buy_url = chat_url(message_text)
@@ -655,14 +580,16 @@ async def process_buy_subscription(update: Update, context: ContextTypes.DEFAULT
         f"где уже будет подготовлено сообщение с деталями."
     )
 
+    short_name = service['name'].split(' (')[0].lower()
+
     keyboard = [
         [InlineKeyboardButton("💬 Отправить администратору", url=buy_url)],
-        [InlineKeyboardButton(f"◀️ Вернуться к абонементу", callback_data=f"sub_calc:{back_callback}")],
+        [InlineKeyboardButton("◀️ Вернуться к абонементу", callback_data=f"sub_calc:{back_callback}")],
         [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
     ]
 
     await query.edit_message_text(
-        hp(f"📅 Хочу записаться → {parent_title} → Абонемент → Покупка", text),
+        hp("📅 Хочу записаться → Абонемент → Покупка", text),
         reply_markup=kb(*keyboard)
     )
 
@@ -681,7 +608,7 @@ async def show_prep_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text(
         hp("📚 Подготовка к эпиляции",
-           "📚 Подготовка к эпиляции\n\nВыберите тип:"),
+           "📚 Подготовка к эпиляции\n\nВыберите тип эпиляции:"),
         reply_markup=kb(*keyboard)
     )
 
@@ -743,7 +670,7 @@ async def show_after_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text(
         hp("💆 Уход после эпиляции",
-           "💆 Уход после эпиляции\n\nВыберите тип:"),
+           "💆 Уход после эпиляции\n\nВыберите тип эпиляции:"),
         reply_markup=kb(*keyboard)
     )
 
@@ -800,9 +727,9 @@ async def show_price_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("⚡ Электроэпиляция", callback_data="price:epilation")],
         [InlineKeyboardButton("💡 Лазерная эпиляция", callback_data="price:laser")],
-        [InlineKeyboardButton("🌿 Депиляция", callback_data="price:depilation")],
-        [InlineKeyboardButton("🔸 Коррекция фигуры", callback_data="price:body")],
-        [InlineKeyboardButton("🔹 Косметология", callback_data="price:cosmetology")],
+        [InlineKeyboardButton("🌿 Депиляция (воск)", callback_data="price:depilation")],
+        [InlineKeyboardButton("🔸 Эстетика тела", callback_data="price:body")],
+        [InlineKeyboardButton("🔹 Эстетика лица", callback_data="price:cosmetology")],
         [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
     ]
     await query.edit_message_text(
@@ -819,106 +746,105 @@ async def price_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "epilation": (
             "⚡ Электроэпиляция\n\n"
             "📌 Минимальная запись — 30 минут.\n"
-            "📌 Цена одинаковая для всех зон — от 60 ₽/мин.\n"
+            "📌 Топ-мастер Алла — от 75 ₽/мин.\n"
+            "📌 Мастера Мария, Римма, Зульфия — от 65 ₽/мин.\n"
+            "📌 Цена одинаковая для всех зон.\n"
             "📌 Все расходники включены в стоимость, кроме отдельных случаев (уточняйте у мастера/администратора).\n\n"
-            "• 30 минут — от 1 800 ₽\n"
-            "• 1 час — от 3 600 ₽\n"
-            "• 1,5 часа — от 5 400 ₽\n"
-            "• 2 часа — от 7 200 ₽\n"
-            "• 3 часа — от 10 800 ₽\n\n"
+            "• 30 минут — от 1 950 ₽\n"
+            "• 1 час — от 3 900 ₽\n"
+            "• 1,5 часа — от 5 850 ₽\n"
+            "• 2 часа — от 7 800 ₽\n"
+            "• 3 часа — от 11 700 ₽\n\n"
             "📌 Точная стоимость зависит от мастера и отображается при создании записи в DiKidi."
         ),
         "laser": (
             "💡 Лазерная эпиляция\n\n"
-            "Комплексы:\n"
-            "• Комплекс 1 — от 2 850 ₽ (подмышки + бикини глубокое)\n"
-            "• Комплекс 2 — от 5 225 ₽ (подмышки + бикини глубокое + голени)\n"
-            "• Комплекс 3 — от 6 175 ₽ (подмышки + бикини глубокое + ноги полностью)\n"
-            "• Комплекс 4 — от 8 500 ₽ (подмышки + бикини глубокое + ноги полностью + руки полностью)\n"
-            "• Комплекс 5 — от 9 500 ₽ (всё тело)\n\n"
-            "Отдельные зоны:\n"
-            "• Верхняя губа — от 800 ₽\n"
-            "• Бакенбарды — от 800 ₽\n"
-            "• Подбородок — от 800 ₽\n"
-            "• Лицо полностью — от 2 000 ₽\n"
-            "• Шея — от 1 000 ₽\n"
-            "• Декольте — от 2 000 ₽\n"
-            "• Подмышки — от 1 000 ₽\n"
-            "• Руки выше локтя — от 2 000 ₽\n"
-            "• Руки полностью — от 2 500 ₽\n"
-            "• Линия живота — от 1 000 ₽\n"
-            "• Живот полностью — от 2 000 ₽\n"
-            "• Поясница — от 1 000 ₽\n"
-            "• Ягодицы — от 2 000 ₽\n"
-            "• Бёдра — от 2 500 ₽\n"
-            "• Голени — от 2 500 ₽\n"
-            "• Ноги полностью — от 3 500 ₽\n"
-            "• Бикини классическое — от 1 000 ₽\n"
-            "• Бикини глубокое — от 2 000 ₽\n"
-            "• Пальцы ног — от 800 ₽\n\n"
+            "Бикини классическое — от 1 200 ₽\n"
+            "Бикини глубокое — от 2 000 ₽\n"
+            "Бикини тотальное (включая межъягодичку) — от 3 000 ₽\n"
+            "Подмышечные впадины — от 1 200 ₽\n\n"
+            "ЛЭ КОМПЛЕКС: подмышки + бикини тотальное + ноги полностью — от 6 700 ₽\n"
+            "ЛЭ КОМПЛЕКС: всё тело — от 12 000 ₽\n\n"
+            "Верхняя губа — от 800 ₽\n"
+            "Бакенбарды — от 800 ₽\n"
+            "Подбородок — от 800 ₽\n"
+            "Лицо полностью — от 2 000 ₽\n"
+            "Шея — от 1 200 ₽\n"
+            "Декольте — от 2 000 ₽\n"
+            "Руки выше локтя — от 2 000 ₽\n"
+            "Руки полностью — от 2 500 ₽\n"
+            "Линия живота — от 1 200 ₽\n"
+            "Живот полностью — от 2 000 ₽\n"
+            "Спина полностью — от 2 500 ₽\n"
+            "Поясница — от 1 200 ₽\n"
+            "Ягодицы — от 2 000 ₽\n"
+            "Бёдра — от 2 500 ₽\n"
+            "Голени (включая колени) — от 2 500 ₽\n"
+            "Ноги полностью — от 3 500 ₽\n"
+            "Пальцы ног — от 800 ₽\n\n"
+            "📌 Возможно собрать индивидуальный комплекс из любых зон — стоимость равна сумме выбранных зон.\n\n"
             "🎁 Скидка на абонемент:\n"
             "• 5 процедур — 5%\n"
             "• 10 процедур — 15%"
         ),
         "depilation": (
             "🌿 Депиляция (воск)\n\n"
-            "Комплексы:\n"
-            "• Мини — от 2 500 ₽\n"
-            "• Стандарт — от 3 000 ₽\n"
-            "• Максимум — от 3 500 ₽\n\n"
-            "Отдельные зоны:\n"
-            "• Лицо полностью — от 1 200 ₽\n"
-            "• Бикини классическое — от 1 500 ₽\n"
-            "• Глубокое бикини — от 2 000 ₽\n"
-            "• Подмышки — от 800 ₽\n"
-            "• Руки до локтя — от 800 ₽\n"
-            "• Руки полностью — от 1 200 ₽\n"
-            "• Ноги до колена — от 1 200 ₽\n"
-            "• Ноги полностью — от 1 800 ₽\n"
-            "• Бедро (выше колена) — от 1 000 ₽\n"
-            "• Ягодицы — от 1 000 ₽"
+            "Бикини классическое — от 1 500 ₽\n"
+            "Бикини глубокое — от 2 200 ₽\n"
+            "Подмышки — от 800 ₽\n"
+            "Лицо полностью — от 1 500 ₽\n"
+            "Руки до локтя (включительно) — от 800 ₽\n"
+            "Руки полностью — от 1 200 ₽\n"
+            "Поясница — от 800 ₽\n"
+            "Ягодицы — от 1 000 ₽\n"
+            "Ноги выше колена (бедро) — от 1 000 ₽\n"
+            "Ноги до колена (включительно) — от 1 000 ₽\n"
+            "Ноги полностью — от 1 800 ₽"
         ),
         "body": (
-            "🔸 Коррекция фигуры\n\n"
-            "Комплексы:\n"
-            "• Комплекс 2в1 — от 4 500 ₽ / 60 мин\n"
-            "• Комплекс 3в1 — от 6 750 ₽ / 90 мин\n\n"
-            "Отдельные процедуры:\n"
-            "• Сфера тела (60 мин) — от 4 500 ₽\n"
-            "• Сфера тела (30 мин) — от 3 000 ₽\n"
-            "• Микроволны (30 мин) — от 3 000 ₽\n"
-            "• Горячий вакуум (30 мин) — от 3 000 ₽\n"
-            "• Индиба (30 мин) — от 1 500 ₽\n\n"
+            "🔸 Эстетика тела\n\n"
+            "Комплексы «2 в 1» и «3 в 1» — это 2 или 3 услуги из списка, "
+            "каждая продолжительностью 30 минут.\n\n"
+            "Сфера для тела (30 мин) — от 3 000 ₽\n"
+            "Сфера для тела (60 мин) — от 5 000 ₽\n"
+            "Микроволны (30 мин) — от 3 000 ₽\n"
+            "Горячий вакуумный массаж (30 мин) — от 3 000 ₽\n"
+            "Скетч-массаж «Жиромес» (30 мин) — от 3 000 ₽\n"
+            "Скетч-массаж «Жиромес» (60 мин) — от 5 000 ₽\n"
+            "Вибрационный массаж (30 мин) — от 3 000 ₽\n"
+            "Вибрационный массаж (60 мин) — от 5 000 ₽\n"
+            "Индиба (30 мин) — от 3 000 ₽\n"
+            "Индиба (80 мин) — от 5 500 ₽\n\n"
+            "Комплекс 2 в 1 — от 5 500 ₽ / 70 мин\n"
+            "Комплекс 3 в 1 — от 7 000 ₽ / 90 мин\n\n"
             "🎁 Скидка на абонемент:\n"
             "• 5 процедур — 5%\n"
             "• 10 процедур — 15%"
         ),
         "cosmetology": (
-            "🔹 Косметология и уход за лицом\n\n"
+            "🔹 Эстетика лица\n\n"
             "Чистки:\n"
-            "• Комбинированная (105 мин) — от 5 000 ₽\n"
-            "• УЗ-чистка (90 мин) — от 4 000 ₽\n"
-            "• Механическая (90 мин) — от 4 000 ₽\n\n"
+            "• Экспресс-чистка УЗ (1 час) — от 2 500 ₽\n"
+            "• УЗ-чистка по Comodex (1 ч 30 мин) — от 4 000 ₽\n"
+            "• Механическая чистка по Comodex (1 ч 30 мин) — от 4 000 ₽\n"
+            "• Комбинированная чистка по Comodex (1 ч 45 мин) — от 5 000 ₽\n\n"
             "Уходы:\n"
-            "• Line Repair (60 мин) — от 4 000 ₽\n"
-            "• Line Repair + массаж (90 мин) — от 5 000 ₽\n"
-            "• Unstress (60 мин) — от 3 600 ₽\n"
+            "• Unstress (60 мин) — от 3 500 ₽\n"
             "• Unstress + массаж (90 мин) — от 4 500 ₽\n"
             "• Bio Phyto (60 мин) — от 3 500 ₽\n"
             "• Bio Phyto + массаж (90 мин) — от 4 500 ₽\n"
-            "• Карбокситерапия (60 мин) — от 3 500 ₽\n"
-            "• Карбокситерапия + массаж (90 мин) — от 4 500 ₽\n"
             "• Comodex (60 мин) — от 3 700 ₽\n"
-            "• Дарсонваль (30 мин) — от 1 000 ₽\n\n"
+            "• Line Repair (60 мин) — от 4 000 ₽\n"
+            "• Line Repair + массаж (90 мин) — от 5 000 ₽\n\n"
             "Пилинги:\n"
-            "• Rose de Mer (75 мин) — от 4 000 ₽\n"
-            "• Миндальный (75 мин) — от 3 500 ₽\n\n"
-            "Аппаратные массажи:\n"
+            "• Миндальный пилинг (75 мин) — от 3 500 ₽\n"
+            "• Пилинг Rose de Mer (75 мин) — от 4 000 ₽\n\n"
+            "Сфера и комплекс для лица:\n"
             "• Сфера для лица (30 мин) — от 3 000 ₽\n"
-            "• Комплекс для лица — от 4 000 ₽\n\n"
-            "Ручной массаж:\n"
-            "• Массаж лица по маске/крему (30 мин) — от 2 000 ₽\n"
-            "• Маска для лица (30 мин) — от 500 ₽"
+            "• Комплекс для лица (60 мин) — от 5 000 ₽\n\n"
+            "Массаж лица:\n"
+            "• Массаж лица классический (30 мин) — от 1 500 ₽\n"
+            "• Массаж лица классический по маске/крему (30 мин) — от 2 000 ₽"
         ),
     }
 
@@ -930,6 +856,9 @@ async def price_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if code in PREP_SECTIONS:
         keyboard.append([InlineKeyboardButton("📚 Как подготовиться", callback_data=f"prep:{code}")])
+
+    if code in ABONEMENT_SECTIONS:
+        keyboard.append([InlineKeyboardButton("📦 Узнать про абонемент", callback_data="promo:subscriptions")])
 
     keyboard.append([InlineKeyboardButton("◀️ Вернуться к прайс-листу", callback_data="main:price")])
     keyboard.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
@@ -947,7 +876,7 @@ async def price_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_promo_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     keyboard = [
-        [InlineKeyboardButton("🎮 Игра «Идеальный визит»", callback_data="promo:game")],
+        [InlineKeyboardButton("⭐ Отзывы и бонусы", callback_data="promo:review")],
         [InlineKeyboardButton("✨ Знакомство с мастером", callback_data="promo:new")],
         [InlineKeyboardButton("📦 Абонементы", callback_data="promo:subscriptions")],
         [InlineKeyboardButton("💰 Мои бонусы", callback_data="promo:bonus")],
@@ -969,16 +898,21 @@ async def promo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = PROMO_TEXTS.get(code, "Информация недоступна.")
 
-    if code == "game":
+    if code == "review":
         keyboard = [
-            [InlineKeyboardButton("💬 Узнать количество бонусов", url=URL_BONUS_BALANCE)],
-            [InlineKeyboardButton("📅 Записаться", callback_data="main:booking")],
+            [InlineKeyboardButton("Яндекс Карты", url=URL_REVIEW_YANDEX),
+             InlineKeyboardButton("2ГИС", url=URL_REVIEW_2GIS)],
+            [InlineKeyboardButton("Zoon", url=URL_REVIEW_Zoon),
+             InlineKeyboardButton("Google", url=URL_REVIEW_GOOGLE)],
+            [InlineKeyboardButton("Stilistic", url=URL_REVIEW_STILISTIC)],
+            [InlineKeyboardButton("💬 Сообщить об отзыве", url=URL_REVIEW)],
             [InlineKeyboardButton("◀️ Вернуться к акциям", callback_data="main:promo")],
             [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
         ]
     elif code == "new":
         keyboard = [
             [InlineKeyboardButton("📅 Записаться на электроэпиляцию", callback_data="book:epilation")],
+            [InlineKeyboardButton("💬 Узнать подробнее", url=URL_NEW_MASTER)],
             [InlineKeyboardButton("◀️ Вернуться к акциям", callback_data="main:promo")],
             [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
         ]
@@ -1008,7 +942,10 @@ async def promo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     elif code == "other":
         keyboard = [
-            [InlineKeyboardButton("📢 Открыть Telegram-канал", url=URL_TELEGRAM_CHANNEL)],
+            [InlineKeyboardButton("💬 Написать администратору", url=URL_OPEN_DOORS)],
+            [InlineKeyboardButton("✈️ Telegram-канал", url=URL_TELEGRAM_CHANNEL)],
+            [InlineKeyboardButton("📸 Instagram", url=URL_INSTAGRAM)],
+            [InlineKeyboardButton("🅥 VK", url=URL_VK)],
             [InlineKeyboardButton("◀️ Вернуться к акциям", callback_data="main:promo")],
             [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
         ]
@@ -1049,7 +986,6 @@ async def about_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data.split(":", 1)[1]
 
-    # --- Мастера ---
     if data == "masters":
         keyboard = []
         for code, m in MASTERS.items():
@@ -1063,19 +999,7 @@ async def about_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Как добраться ---
     if data == "route":
-        text = (
-            "📍 Адрес\n"
-            "Москва, Ленинградское шоссе, 9к1\n"
-            "м. Войковская, последний вагон из центра, выход 4\n"
-            "3 минуты пешком\n\n"
-            "🚶 Как найти\n"
-            "Вход со стороны Ленинградского шоссе (дублёр), посередине дома.\n"
-            "Вывеска «СТУДИЯ ЭПИЛЯЦИИ».\n\n"
-            "Ориентиры: рядом с магазином «ВинЛаб» и композицией из красных цветов и листьев у входа.\n\n"
-            "Далее по коридору."
-        )
         keyboard = [
             [InlineKeyboardButton("📸 Фото входа", url=URL_ENTRANCE_PHOTO)],
             [InlineKeyboardButton("🗺 Яндекс.Карты", url=URL_MAPS_YANDEX)],
@@ -1084,17 +1008,16 @@ async def about_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
         ]
         await query.edit_message_text(
-            hp("ℹ️ О студии → Как добраться", text),
+            hp("ℹ️ О студии → Как добраться", ADDRESS_TEXT),
             reply_markup=kb(*keyboard)
         )
         return
 
-    # --- Оставить отзыв ---
     if data == "review":
         text = (
             "⭐ Ваше мнение очень важно!\n\n"
-            "За отзыв начисляем 300 бонусов,\n"
-            "за отзыв с фото — 400 бонусов.\n\n"
+            "За отзыв начисляем +300 баллов,\n"
+            "за отзыв с фото — +100 баллов.\n\n"
             "Оставить отзыв:\n\n"
             "После того как вы оставили отзыв — нажмите кнопку ниже, "
             "и отправьте скриншот, чтобы администратор начислил бонусы."
@@ -1104,6 +1027,7 @@ async def about_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("2ГИС", url=URL_REVIEW_2GIS)],
             [InlineKeyboardButton("Zoon", url=URL_REVIEW_Zoon),
              InlineKeyboardButton("Google", url=URL_REVIEW_GOOGLE)],
+            [InlineKeyboardButton("Stilistic", url=URL_REVIEW_STILISTIC)],
             [InlineKeyboardButton("💬 Сообщить об отзыве", url=URL_REVIEW)],
             [InlineKeyboardButton("◀️ Вернуться к разделу «О студии»", callback_data="main:about")],
             [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
@@ -1114,7 +1038,6 @@ async def about_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Соцсети ---
     if data == "social":
         text = (
             "📢 Мы в соцсетях\n\n"
@@ -1135,7 +1058,6 @@ async def about_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- FAQ ---
     if data == "faq":
         keyboard = [
             [InlineKeyboardButton("Как можно оплатить?", callback_data="faq:pay")],
@@ -1153,7 +1075,6 @@ async def about_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Отзывы клиентов ---
     if data == "client_reviews":
         text = (
             "📖 Отзывы клиентов\n\n"
@@ -1251,7 +1172,7 @@ async def faq_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
 
     await query.edit_message_text(
-        hp(f"ℹ️ О студии → FAQ", text),
+        hp("ℹ️ О студии → FAQ", text),
         reply_markup=kb(*keyboard)
     )
 
@@ -1323,7 +1244,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if any(k in text_lower for k in ["акции", "скидки", "бонусы"]):
         keyboard = [
-            [InlineKeyboardButton("🎮 Игра «Идеальный визит»", callback_data="promo:game")],
+            [InlineKeyboardButton("⭐ Отзывы и бонусы", callback_data="promo:review")],
             [InlineKeyboardButton("✨ Знакомство с мастером", callback_data="promo:new")],
             [InlineKeyboardButton("📦 Абонементы", callback_data="promo:subscriptions")],
             [InlineKeyboardButton("💰 Мои бонусы", callback_data="promo:bonus")],
@@ -1343,8 +1264,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⚡ Электроэпиляция", callback_data="price:epilation")],
             [InlineKeyboardButton("💡 Лазерная эпиляция", callback_data="price:laser")],
             [InlineKeyboardButton("🌿 Депиляция", callback_data="price:depilation")],
-            [InlineKeyboardButton("🔸 Коррекция фигуры", callback_data="price:body")],
-            [InlineKeyboardButton("🔹 Косметология", callback_data="price:cosmetology")],
+            [InlineKeyboardButton("🔸 Эстетика тела", callback_data="price:body")],
+            [InlineKeyboardButton("🔹 Эстетика лица", callback_data="price:cosmetology")],
             [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
         ]
         await update.message.reply_text(
