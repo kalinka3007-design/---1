@@ -15,7 +15,7 @@ from content import (
     DIKIDI_URL,
     URL_BONUS_BALANCE, URL_CERTIFICATE, URL_SUBSCRIPTION,
     URL_FRIEND, URL_REVIEW, URL_PAYMENT, URL_TRANSFER, URL_CANCEL,
-    URL_LATE, URL_SAME_DAY, URL_QUESTION, URL_NEW_MASTER, URL_OPEN_DOORS,
+    URL_LATE, URL_SAME_DAY, URL_QUESTION, URL_NEW_MASTER,
     URL_REVIEW_YANDEX, URL_REVIEW_Zoon, URL_REVIEW_2GIS, URL_REVIEW_GOOGLE,
     URL_REVIEW_STILISTIC,
     URL_MAPS_YANDEX, URL_MAPS_GOOGLE, URL_ENTRANCE_PHOTO, URL_CLIENT_REVIEWS,
@@ -395,7 +395,6 @@ MAIN_TEXT = (
 
 async def start_command(update, context):
     stats["starts"] += 1
-    save_stats()
     stats["funnel"]["main_menu"] += 1
     save_stats()
     await update.message.reply_text(MAIN_TEXT, reply_markup=main_menu_keyboard())
@@ -1053,7 +1052,6 @@ async def show_price_menu(update, context):
         [InlineKeyboardButton("🌿 Депиляция (воск)", callback_data="price:depilation")],
         [InlineKeyboardButton("🔸 Эстетика тела", callback_data="price:body")],
         [InlineKeyboardButton("🔹 Эстетика лица", callback_data="price:cosmetology")],
-        [InlineKeyboardButton("💆 Ручной массаж", callback_data="price:manual_massage")],
         [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
     ]
     await safe_edit(
@@ -1069,11 +1067,7 @@ async def price_callback(update, context):
 
     text = PRICE_TEXTS.get(code, "Информация недоступна.")
 
-    keyboard = []
-    if code == "manual_massage":
-        keyboard.append([InlineKeyboardButton("💬 Уточнить запись у администратора", url=URL_QUESTION)])
-    else:
-        keyboard.append([InlineKeyboardButton("📅 Записаться", callback_data="main:booking")])
+    keyboard = [[InlineKeyboardButton("📅 Записаться", callback_data="main:booking")]]
     if code in PREP_SECTIONS:
         keyboard.append([InlineKeyboardButton("📚 Как подготовиться", callback_data=f"prep:{code}")])
     if code in ABONEMENT_SECTIONS:
@@ -1468,7 +1462,6 @@ async def handle_message(update, context):
             [InlineKeyboardButton("🌿 Депиляция", callback_data="price:depilation")],
             [InlineKeyboardButton("🔸 Эстетика тела", callback_data="price:body")],
             [InlineKeyboardButton("🔹 Эстетика лица", callback_data="price:cosmetology")],
-        [InlineKeyboardButton("💆 Ручной массаж", callback_data="price:manual_massage")],
             [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
         ]
         await update.message.reply_text(
