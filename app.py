@@ -18,8 +18,6 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    # Запускаем Flask в отдельном потоке (чтобы освободить основной)
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
-    # Запускаем бота в основном потоке (чтобы сигналы работали)
     run_bot()
