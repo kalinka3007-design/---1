@@ -2,6 +2,7 @@ import os
 import re
 import time
 import datetime
+import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, MessageHandler, CommandHandler,
@@ -9,7 +10,7 @@ from telegram.ext import (
 )
 
 from content import (
-    BOOKING, MASTERS, PREP_TEXTS, AFTER_TEXTS, PROMO_TEXTS, FAQ_TEXTS,
+    BOOKING, MASTERS, PREP_TEXTS, AFTER_TEXTS, PROMO_TEXTS, PRICE_TEXTS, FAQ_TEXTS,
     ADDRESS_TEXT, ABONEMENT_SECTIONS,
     DIKIDI_URL,
     URL_BONUS_BALANCE, URL_CERTIFICATE, URL_SUBSCRIPTION,
@@ -36,9 +37,8 @@ ADMIN_ID = int(ADMIN_CHAT_ID) if ADMIN_CHAT_ID else None
 
 PREP_SECTIONS = ("epilation", "laser", "depilation")
 MAX_MSG_LEN = 4000
-MAX_CALLBACK_LEN = 60  # С запасом до лимита 64
+MAX_CALLBACK_LEN = 60
 
-# Часовой пояс для отчёта (Москва, UTC+3)
 MSK = datetime.timezone(datetime.timedelta(hours=3))
 REPORT_TIME = datetime.time(hour=10, minute=0, tzinfo=MSK)
 
@@ -56,6 +56,43 @@ stats = {
     "started_at": datetime.datetime.now(MSK),
 }
 
+STATS_FILE = os.getenv("STATS_FILE", "stats.json")
+
+
+def save_stats():
+    """Persist anonymous counters locally; configure durable storage for persistence across redeploys."""
+    try:
+        payload = dict(stats)
+        payload["started_at"] = stats["started_at"].isoformat()
+        with open(STATS_FILE, "w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False)
+    except Exception as exc:
+        print(f"⚠️ Не удалось сохранить статистику: {exc}")
+
+
+def load_stats():
+    """Restore counters from a previous process run when the stats file is available."""
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as file:
+            saved = json.load(file)
+        for key in ("starts", "clicks", "admin_requests", "subscriptions", "dikidi_shown"):
+            if isinstance(saved.get(key), int) and saved[key] >= 0:
+                stats[key] = saved[key]
+        if isinstance(saved.get("funnel"), dict):
+            for key in stats["funnel"]:
+                value = saved["funnel"].get(key)
+                if isinstance(value, int) and value >= 0:
+                    stats["funnel"][key] = value
+        if isinstance(saved.get("categories"), dict):
+            stats["categories"] = {str(k): int(v) for k, v in saved["categories"].items()
+                                    if isinstance(v, int) and v >= 0}
+        if saved.get("started_at"):
+            stats["started_at"] = datetime.datetime.fromisoformat(saved["started_at"])
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        print(f"⚠️ Не удалось загрузить статистику: {exc}")
+
 
 def reset_stats():
     stats["starts"] = 0
@@ -66,6 +103,10 @@ def reset_stats():
     stats["subscriptions"] = 0
     stats["dikidi_shown"] = 0
     stats["started_at"] = datetime.datetime.now(MSK)
+    save_stats()
+
+
+load_stats()
 
 
 def fmt_top_categories():
@@ -101,7 +142,7 @@ def build_report():
         "🔥 Топ-3 категории:",
         fmt_top_categories(),
         "",
-        f"📦 Показали экран абонемента: {stats['subscriptions']}",
+        f"📦 Показов экрана абонемента: {stats['subscriptions']}",
         f"💬 Обращений к админу: {stats['admin_requests']}",
     ]
     return "\n".join(lines)
@@ -109,9 +150,8 @@ def build_report():
 
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
     if not ADMIN_ID:
-        reset_stats()
+        print("⚠️ ADMIN_CHAT_ID не задан — отчёт не отправлен, статистика сохранена в памяти")
         return
-    # Не отправляем пустой отчёт
     if stats["starts"] == 0 and stats["clicks"] == 0:
         print("⚠️ Отчёт пустой — не отправляем")
         reset_stats()
@@ -119,10 +159,9 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_message(chat_id=ADMIN_ID, text=build_report())
         print("✅ Отчёт отправлен")
-    except Exception as e:
-        print(f"❌ Ошибка отправки отчёта: {e}")
-    finally:
         reset_stats()
+    except Exception as e:
+        print(f"❌ Ошибка отправки отчёта: {e}; статистика не сброшена")
 
 
 # ==============================================
@@ -149,7 +188,6 @@ def format_money(n: int) -> str:
 
 
 def split_text(text: str, limit: int = MAX_MSG_LEN):
-    """Разбивает текст на части ≤ limit символов по абзацам."""
     if len(text) <= limit:
         return [text]
     parts = []
@@ -168,7 +206,6 @@ def split_text(text: str, limit: int = MAX_MSG_LEN):
 
 
 def find_service(service_callback: str):
-    """Ищет услугу по callback вида 'srv:', 'srv2:', 'srv3:'."""
     parts = service_callback.split(":")
 
     if parts[0] == "srv" and len(parts) >= 3:
@@ -210,15 +247,13 @@ def _back_title_for(code):
 
 
 # ==============================================
-# БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ С РАЗБИВКОЙ
+# БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ
 # ==============================================
 
 async def safe_edit(query, context, text, reply_markup=None):
-    """Если текст длиннее лимита — разбиваем на несколько сообщений."""
     parts = split_text(text)
 
     if len(parts) == 1:
-        # Обычный случай
         try:
             await query.edit_message_text(text, reply_markup=reply_markup)
             return
@@ -239,7 +274,6 @@ async def safe_edit(query, context, text, reply_markup=None):
                     pass
             return
 
-    # Много частей — редактируем первую, остальные отправляем отдельно
     try:
         await query.edit_message_text(parts[0])
     except Exception as e:
@@ -311,6 +345,7 @@ async def notify_admin_button(update, context, tag, extra=""):
             )
         )
         stats["admin_requests"] += 1
+        save_stats()
     except Exception as e:
         print(f"❌ Ошибка: {e}")
 
@@ -360,12 +395,15 @@ MAIN_TEXT = (
 
 async def start_command(update, context):
     stats["starts"] += 1
+    save_stats()
     stats["funnel"]["main_menu"] += 1
+    save_stats()
     await update.message.reply_text(MAIN_TEXT, reply_markup=main_menu_keyboard())
 
 
 async def show_main_menu(update, context):
     stats["funnel"]["main_menu"] += 1
+    save_stats()
     if update.callback_query:
         await safe_edit(update.callback_query, context, MAIN_TEXT, main_menu_keyboard())
     else:
@@ -382,6 +420,7 @@ async def universal_callback(update, context):
     print(f"🔘 {data}")
 
     stats["clicks"] += 1
+    save_stats()
 
     try:
         await query.answer()
@@ -440,6 +479,7 @@ async def universal_callback(update, context):
 
         if data.startswith("sub_calc:"):
             stats["subscriptions"] += 1
+            save_stats()
             await show_subscription_calc(update, context)
             return
         if data.startswith("buy:"):
@@ -504,7 +544,6 @@ async def booking_callback(update, context):
     query = update.callback_query
     data = query.data
 
-    # ===== book:CODE =====
     if data.startswith("book:"):
         code = data.split(":", 1)[1]
         cat = BOOKING.get(code)
@@ -513,7 +552,9 @@ async def booking_callback(update, context):
             return
 
         stats["funnel"]["category"] += 1
+        save_stats()
         stats["categories"][code] = stats["categories"].get(code, 0) + 1
+        save_stats()
 
         extra = []
         if code in PREP_SECTIONS:
@@ -547,7 +588,6 @@ async def booking_callback(update, context):
         )
         return
 
-    # ===== sub:PARENT:SUB =====
     if data.startswith("sub:"):
         parts = data.split(":")
         parent_code, sub_code = parts[1], parts[2]
@@ -566,7 +606,6 @@ async def booking_callback(update, context):
         extra.append([InlineKeyboardButton(f"◀️ Вернуться к {parent['title']}",
                                            callback_data=f"book:{parent_code}")])
 
-        # Если есть вложенные подкатегории (например, Уходы → Line Repair)
         if "sub" in sub:
             keyboard = []
             for s2 in sub["sub"]:
@@ -582,7 +621,6 @@ async def booking_callback(update, context):
             )
             return
 
-        # Иначе — список услуг
         keyboard = []
         for i, s in enumerate(sub["services"]):
             keyboard.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
@@ -595,7 +633,6 @@ async def booking_callback(update, context):
         )
         return
 
-    # ===== sub2:PARENT:SUB:SUB2 =====
     if data.startswith("sub2:"):
         parts = data.split(":")
         if len(parts) < 4:
@@ -628,12 +665,12 @@ async def booking_callback(update, context):
         )
         return
 
-    # ===== srv / srv2 / srv3 =====
     if data.startswith("srv:") and data.count(":") == 2:
         parts = data.split(":")
         code, idx = parts[1], int(parts[2])
         s = BOOKING[code]["services"][idx]
         stats["funnel"]["service"] += 1
+        save_stats()
         await show_service_result(
             query, context, s,
             service_callback=data,
@@ -654,6 +691,7 @@ async def booking_callback(update, context):
         sub = next(s for s in parent["sub"] if s["code"] == sub_code)
         s = sub["services"][idx]
         stats["funnel"]["service"] += 1
+        save_stats()
         await show_service_result(
             query, context, s,
             service_callback=data,
@@ -675,6 +713,7 @@ async def booking_callback(update, context):
         sub2 = next(s for s in sub["sub"] if s["code"] == sub2_code)
         s = sub2["services"][idx]
         stats["funnel"]["service"] += 1
+        save_stats()
         await show_service_result(
             query, context, s,
             service_callback=data,
@@ -688,9 +727,6 @@ async def booking_callback(update, context):
 
 async def show_service_result(query, context, service, service_callback,
                               back_callback, back_title, parent_code, breadcrumb):
-    stats["dikidi_shown"] += 1
-
-    # Проверка URL
     if not service.get("url"):
         await safe_edit(
             query, context,
@@ -705,6 +741,8 @@ async def show_service_result(query, context, service, service_callback,
         )
         return
 
+    stats["dikidi_shown"] += 1
+    save_stats()
     text_lines = [f"✅ {service['name']} — {service['price']}", ""]
 
     duration = service.get("duration")
@@ -733,15 +771,12 @@ async def show_service_result(query, context, service, service_callback,
         [InlineKeyboardButton("📅 Открыть календарь записи", url=service["url"])],
     ]
 
-    # Абонемент — передаём callback САМОЙ УСЛУГИ, а не back_callback
     if parent_code in ABONEMENT_SECTIONS:
         callback_data = f"sub_calc:{service_callback}"
-        # Проверка длины
         if len(callback_data.encode("utf-8")) <= MAX_CALLBACK_LEN:
             keyboard.append([InlineKeyboardButton("📦 Узнать про абонемент",
                                                   callback_data=callback_data)])
 
-    # Подготовка
     if parent_code in PREP_SECTIONS:
         prep_cb = f"prep_srv:{parent_code}:{service_callback}"
         if len(prep_cb.encode("utf-8")) <= MAX_CALLBACK_LEN:
@@ -764,7 +799,6 @@ async def show_service_result(query, context, service, service_callback,
 
 async def show_subscription_calc(update, context):
     query = update.callback_query
-    # sub_calc:{service_callback}
     service_callback = query.data.split(":", 1)[1]
 
     service, parent_code, _ = find_service(service_callback)
@@ -816,7 +850,6 @@ async def show_subscription_calc(update, context):
 
 async def process_buy_subscription(update, context):
     query = update.callback_query
-    # buy:{count}:{service_callback}
     parts = query.data.split(":", 2)
     count = int(parts[1])
     service_callback = parts[2]
@@ -845,10 +878,8 @@ async def process_buy_subscription(update, context):
         f"«{service['name']}» — {count} процедур за {format_money(total)} ₽."
     )
     buy_url = chat_url(message_text)
-
-    # Проверка длины URL
     if len(buy_url) > 2000:
-        buy_url = URL_SUBSCRIPTION  # fallback
+        buy_url = URL_SUBSCRIPTION
 
     text = (
         f"📦 Абонемент на «{service['name']}»\n\n"
@@ -1022,6 +1053,7 @@ async def show_price_menu(update, context):
         [InlineKeyboardButton("🌿 Депиляция (воск)", callback_data="price:depilation")],
         [InlineKeyboardButton("🔸 Эстетика тела", callback_data="price:body")],
         [InlineKeyboardButton("🔹 Эстетика лица", callback_data="price:cosmetology")],
+        [InlineKeyboardButton("💆 Ручной массаж", callback_data="price:manual_massage")],
         [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
     ]
     await safe_edit(
@@ -1035,120 +1067,13 @@ async def price_callback(update, context):
     query = update.callback_query
     code = query.data.split(":", 1)[1]
 
-    texts = {
-        "epilation": (
-            "⚡ Электроэпиляция\n\n"
-            "📌 Минимальная запись — 30 минут.\n"
-            "📌 Топ-мастер Алла — от 75 ₽/мин.\n"
-            "📌 Мастера Мария, Римма, Зульфия — от 65 ₽/мин.\n"
-            "📌 Цена одинаковая для всех зон.\n"
-            "📌 Все расходники включены в стоимость, кроме отдельных случаев "
-            "(уточняйте у мастера/администратора).\n\n"
-            "• 30 минут — от 1 950 ₽\n"
-            "• 1 час — от 3 900 ₽\n"
-            "• 1,5 часа — от 5 850 ₽\n"
-            "• 2 часа — от 7 800 ₽\n"
-            "• 3 часа — от 11 700 ₽\n\n"
-            "📌 Точная стоимость зависит от мастера и отображается "
-            "при создании записи в DiKidi."
-        ),
-        "laser": (
-            "💡 Лазерная эпиляция\n\n"
-            "Бикини классическое — от 1 200 ₽\n"
-            "Бикини глубокое — от 2 000 ₽\n"
-            "Бикини тотальное (включая межъягодичку) — от 3 000 ₽\n"
-            "Подмышечные впадины — от 1 200 ₽\n\n"
-            "ЛЭ КОМПЛЕКС: подмышки + бикини тотальное + ноги полностью — от 6 700 ₽\n"
-            "ЛЭ КОМПЛЕКС: всё тело — от 12 000 ₽\n\n"
-            "Верхняя губа — от 800 ₽\n"
-            "Бакенбарды — от 800 ₽\n"
-            "Подбородок — от 800 ₽\n"
-            "Лицо полностью — от 2 000 ₽\n"
-            "Шея — от 1 200 ₽\n"
-            "Декольте — от 2 000 ₽\n"
-            "Руки выше локтя — от 2 000 ₽\n"
-            "Руки полностью — от 2 500 ₽\n"
-            "Линия живота — от 1 200 ₽\n"
-            "Живот полностью — от 2 000 ₽\n"
-            "Спина полностью — от 2 500 ₽\n"
-            "Поясница — от 1 200 ₽\n"
-            "Ягодицы — от 2 000 ₽\n"
-            "Бёдра — от 2 500 ₽\n"
-            "Голени (включая колени) — от 2 500 ₽\n"
-            "Ноги полностью — от 3 500 ₽\n"
-            "Пальцы ног — от 800 ₽\n\n"
-            "📌 Возможно собрать индивидуальный комплекс из любых зон — "
-            "стоимость равна сумме выбранных зон.\n\n"
-            "🎁 Скидка на абонемент:\n"
-            "• 5 процедур — 5%\n"
-            "• 10 процедур — 15%"
-        ),
-        "depilation": (
-            "🌿 Депиляция (воск)\n\n"
-            "Бикини классическое — от 1 500 ₽\n"
-            "Бикини глубокое — от 2 200 ₽\n"
-            "Подмышки — от 800 ₽\n"
-            "Лицо полностью — от 1 500 ₽\n"
-            "Руки до локтя (включительно) — от 800 ₽\n"
-            "Руки полностью — от 1 200 ₽\n"
-            "Поясница — от 800 ₽\n"
-            "Ягодицы — от 1 000 ₽\n"
-            "Ноги выше колена (бедро) — от 1 000 ₽\n"
-            "Ноги до колена (включительно) — от 1 000 ₽\n"
-            "Ноги полностью — от 1 800 ₽"
-        ),
-        "body": (
-            "🔸 Эстетика тела\n\n"
-            "Комплексы «2 в 1» и «3 в 1» — это 2 или 3 услуги из списка, "
-            "каждая продолжительностью 30 минут.\n\n"
-            "Сфера для тела (30 мин) — от 3 000 ₽\n"
-            "Сфера для тела (60 мин) — от 5 000 ₽\n"
-            "Микроволны (30 мин) — от 3 000 ₽\n"
-            "Горячий вакуумный массаж (30 мин) — от 3 000 ₽\n"
-            "Скетч-массаж «Жиромес» (30 мин) — от 3 000 ₽\n"
-            "Скетч-массаж «Жиромес» (60 мин) — от 5 000 ₽\n"
-            "Вибрационный массаж (30 мин) — от 3 000 ₽\n"
-            "Вибрационный массаж (60 мин) — от 5 000 ₽\n"
-            "Индиба (30 мин) — от 3 000 ₽\n"
-            "Индиба (80 мин) — от 5 500 ₽\n\n"
-            "Комплекс 2 в 1 — от 5 500 ₽ / 70 мин\n"
-            "Комплекс 3 в 1 — от 7 000 ₽ / 90 мин\n\n"
-            "🎁 Скидка на абонемент:\n"
-            "• 5 процедур — 5%\n"
-            "• 10 процедур — 15%"
-        ),
-        "cosmetology": (
-            "🔹 Эстетика лица\n\n"
-            "Чистки:\n"
-            "• Экспресс-чистка УЗ (1 час) — от 2 500 ₽\n"
-            "• УЗ-чистка по Comodex (1 ч 30 мин) — от 4 000 ₽\n"
-            "• Механическая чистка по Comodex (1 ч 30 мин) — от 4 000 ₽\n"
-            "• Комбинированная чистка по Comodex (1 ч 45 мин) — от 5 000 ₽\n\n"
-            "Уходы:\n"
-            "• Unstress (60 мин) — от 3 500 ₽\n"
-            "• Unstress + массаж (90 мин) — от 4 500 ₽\n"
-            "• Bio Phyto (60 мин) — от 3 500 ₽\n"
-            "• Bio Phyto + массаж (90 мин) — от 4 500 ₽\n"
-            "• Comodex (60 мин) — от 3 700 ₽\n"
-            "• Line Repair (60 мин) — от 4 000 ₽\n"
-            "• Line Repair + массаж (90 мин) — от 5 000 ₽\n\n"
-            "Пилинги:\n"
-            "• Миндальный пилинг (75 мин) — от 3 500 ₽\n"
-            "• Пилинг Rose de Mer (75 мин) — от 4 000 ₽\n\n"
-            "Сфера и комплекс для лица:\n"
-            "• Сфера для лица (30 мин) — от 3 000 ₽\n"
-            "• Комплекс для лица (60 мин) — от 5 000 ₽\n\n"
-            "Массаж лица:\n"
-            "• Массаж лица классический (30 мин) — от 1 500 ₽\n"
-            "• Массаж лица классический по маске/крему (30 мин) — от 2 000 ₽"
-        ),
-    }
+    text = PRICE_TEXTS.get(code, "Информация недоступна.")
 
-    text = texts.get(code, "Информация недоступна.")
-
-    keyboard = [
-        [InlineKeyboardButton("📅 Записаться", callback_data="main:booking")],
-    ]
+    keyboard = []
+    if code == "manual_massage":
+        keyboard.append([InlineKeyboardButton("💬 Уточнить запись у администратора", url=URL_QUESTION)])
+    else:
+        keyboard.append([InlineKeyboardButton("📅 Записаться", callback_data="main:booking")])
     if code in PREP_SECTIONS:
         keyboard.append([InlineKeyboardButton("📚 Как подготовиться", callback_data=f"prep:{code}")])
     if code in ABONEMENT_SECTIONS:
@@ -1238,7 +1163,7 @@ async def promo_callback(update, context):
         ]
     elif code == "other":
         keyboard = [
-            [InlineKeyboardButton("💬 Написать администратору", url=URL_OPEN_DOORS)],
+            [InlineKeyboardButton("💬 Уточнить актуальные акции", url=URL_QUESTION)],
             [InlineKeyboardButton("✈️ Telegram-канал", url=URL_TELEGRAM_CHANNEL)],
             [InlineKeyboardButton("📸 Instagram", url=URL_INSTAGRAM)],
             [InlineKeyboardButton("🅥 VK", url=URL_VK)],
@@ -1543,6 +1468,7 @@ async def handle_message(update, context):
             [InlineKeyboardButton("🌿 Депиляция", callback_data="price:depilation")],
             [InlineKeyboardButton("🔸 Эстетика тела", callback_data="price:body")],
             [InlineKeyboardButton("🔹 Эстетика лица", callback_data="price:cosmetology")],
+        [InlineKeyboardButton("💆 Ручной массаж", callback_data="price:manual_massage")],
             [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
         ]
         await update.message.reply_text(
@@ -1582,7 +1508,6 @@ def run_bot():
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Планировщик: отчёт каждый день в 10:00 МСК
     if app.job_queue is not None:
         try:
             app.job_queue.run_daily(send_daily_report, time=REPORT_TIME)
