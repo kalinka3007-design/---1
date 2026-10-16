@@ -27,6 +27,7 @@ stats = {
         "masters_for_service": 0,   # slot:msrv:* (старая ветка)
         "dates_shown": 0,           # _render_dates отработал
         "times_shown": 0,           # slot:date:* (показали времена)
+        "time_clicked": 0,          # slot:time:* (выбрали конкретное время)
         "no_slots_14days": 0,       # «окон нет за 14 дней»
     },
     "categories": {},
@@ -103,5 +104,5 @@ def reset() -> None:
     save()
 
 
-# Автозагрузка при импорте — как было в bot.py
+# Автозагрузка при импорте
 load()
