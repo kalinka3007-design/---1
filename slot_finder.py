@@ -108,7 +108,7 @@ def _clear_master_state(user_data: dict):
     for k in ("slot_master_id", "slot_master_name", "slot_tree", "slot_path",
               "slot_service_id", "slot_service_name", "slot_service_url",
               "slot_service_booking_cb", "slot_service_parent_code",
-              "slot_back_to_services", "slot_day"):
+              "slot_back_to_services", "slot_day", "slot_selected_time"):
         user_data.pop(k, None)
 
 
@@ -217,7 +217,8 @@ async def slot_choose_master(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["slot_master_name"] = name
     for k in ("slot_path", "slot_service_id", "slot_service_name",
               "slot_service_url", "slot_service_booking_cb",
-              "slot_service_parent_code", "slot_back_to_services", "slot_day"):
+              "slot_service_parent_code", "slot_back_to_services",
+              "slot_day", "slot_selected_time"):
         context.user_data.pop(k, None)
 
     try:
@@ -637,7 +638,7 @@ async def slot_back_to_dates(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ==============================================
-# ЭКРАН ВРЕМЁН
+# ЭКРАН ВРЕМЁН (callback-кнопки → экран подтверждения)
 # ==============================================
 
 async def slot_show_times(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -675,19 +676,15 @@ async def slot_show_times(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats_store.bump("funnel.times_shown")
     stats_store.save()
 
+    context.user_data["slot_day"] = ds
+
     mname = context.user_data["slot_master_name"]
     sname = context.user_data["slot_service_name"]
     date_str = day.strftime("%d.%m.%Y")
 
-    def make_url(t: str) -> str:
-        msg = (
-            f"Запишите меня на услугу «{sname}» "
-            f"у мастера {mname} на {date_str} в {t}."
-        )
-        return chat_url(msg)
-
     times = [s.strftime("%H:%M") for s in slots]
-    rows = [[InlineKeyboardButton(t, url=make_url(t)) for t in times[i:i + 3]]
+    rows = [[InlineKeyboardButton(t, callback_data=f"slot:time:{ds}:{t}")
+             for t in times[i:i + 3]]
             for i in range(0, len(times), 3)]
 
     rows.extend(_prep_and_abonement_rows(sid))
@@ -698,15 +695,82 @@ async def slot_show_times(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👩 {mname}\n"
         f"✅ {sname}\n"
         f"📅 {date_str}\n\n"
-        "Свободное время:\n\n"
-        "Нажмите на время — откроется чат с администратором "
-        "и готовым сообщением для записи.\n"
-        "Ожидайте подтверждения."
+        "Выберите удобное время:"
     )
 
     await safe_edit(q, context,
                     hp(f"📅 Хочу записаться → {mname} → {sname}", text),
                     kb(*rows))
+
+
+# ==============================================
+# ЭКРАН ПОДТВЕРЖДЕНИЯ ВРЕМЕНИ
+# ==============================================
+
+async def slot_choose_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    parts = q.data.split(":")   # slot:time:<ISO>:<HH:MM>
+    if len(parts) < 5:
+        await safe_edit(q, context, "⚠️ Некорректный выбор.")
+        return
+    ds, t = parts[2], parts[3] + ":" + parts[4]
+    try:
+        day = date.fromisoformat(ds)
+    except ValueError:
+        await slot_show_masters(update, context)
+        return
+
+    sid = context.user_data.get("slot_service_id")
+    mid = context.user_data.get("slot_master_id")
+    mname = context.user_data.get("slot_master_name", "")
+    sname = context.user_data.get("slot_service_name", "")
+    if not sid or not mid or not mname or not sname:
+        await safe_edit(q, context, "⚠️ Сессия устарела. Начни заново.",
+                        kb([InlineKeyboardButton("🔄 Заново", callback_data="slot:start")],
+                           [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")]))
+        return
+
+    stats_store.bump("funnel.time_clicked")
+    stats_store.save()
+
+    context.user_data["slot_selected_time"] = t
+    context.user_data["slot_day"] = ds
+
+    service = SERVICE_BY_ID.get(sid) or {"name": sname, "price": ""}
+    date_str = day.strftime("%d.%m.%Y")
+
+    # Готовое сообщение админу
+    msg = (
+        f"Запишите меня на услугу «{sname}» "
+        f"у мастера {mname} на {date_str} в {t}."
+    )
+    admin_url = chat_url(msg)
+
+    keyboard = [
+        [InlineKeyboardButton("📩 Отправить заявку администратору", url=admin_url)],
+        [InlineKeyboardButton("◀️ К временам", callback_data=f"slot:date:{ds}")],
+        [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+    ]
+
+    text = (
+        "✅ Вы выбрали:\n\n"
+        f"👩 Мастер: {mname}\n"
+        f"💡 Услуга: {service['name']}"
+    )
+    if service.get("price"):
+        text += f" — {service['price']}"
+    text += (
+        f"\n📅 Дата: {date_str}\n"
+        f"⏰ Время: {t}\n\n"
+        "Нажмите кнопку ниже — откроется чат с администратором студии, "
+        "и сообщение с вашей заявкой уже будет подготовлено. "
+        "Останется только отправить его. "
+        "Администратор подтвердит запись и свяжется с вами."
+    )
+
+    await safe_edit(q, context,
+                    hp(f"📅 Хочу записаться → {mname} → {sname} → {t}", text),
+                    kb(*keyboard))
 
 
 # ==============================================
@@ -763,6 +827,9 @@ async def slot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if data.startswith("slot:srv"):
             await slot_choose_service(update, context)
+            return
+        if data.startswith("slot:time:"):
+            await slot_choose_time(update, context)
             return
         if data.startswith("slot:date:"):
             await slot_show_times(update, context)
