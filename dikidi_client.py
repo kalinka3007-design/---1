@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import date, datetime
 from typing import Any
 from urllib.parse import urlencode
@@ -10,6 +11,41 @@ import httpx
 
 BASE_URL = "https://beauty.dikidi.net"
 
+# ==============================================
+# КЭШ
+# ==============================================
+# masters      — 30 минут
+# cats:<mid>   — 30 минут
+# slots:<sid>:<mid>:<iso>  — 5 минут
+MASTERS_TTL = 1800
+CATS_TTL = 1800
+SLOTS_TTL = 300
+
+_CACHE: dict[str, tuple[Any, float]] = {}
+
+
+def _cache_get(key: str, ttl: float):
+    item = _CACHE.get(key)
+    if not item:
+        return None
+    value, ts = item
+    if time.monotonic() - ts > ttl:
+        _CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _cache_put(key: str, value: Any) -> None:
+    _CACHE[key] = (value, time.monotonic())
+
+
+def clear_cache() -> None:
+    _CACHE.clear()
+
+
+# ==============================================
+# КЛИЕНТ
+# ==============================================
 
 class DikidiError(RuntimeError):
     pass
@@ -35,19 +71,29 @@ class DikidiClient:
         return data
 
     async def get_masters(self) -> dict[str, str]:
+        cached = _cache_get("masters", MASTERS_TTL)
+        if cached is not None:
+            return cached
         d = await self._get_json(
             f"{BASE_URL}/ru/ajax/newrecord/to_master_get_masters/?company_id={self.company_id}"
         )
         raw = d.get("masters")
         if not isinstance(raw, dict):
             raise DikidiError("В ответе DiKidi нет списка мастеров")
-        return {
+        result = {
             str(k): str(v.get("username") or v.get("name") or f"Мастер {k}")
             for k, v in raw.items()
             if isinstance(v, dict)
         }
+        _cache_put("masters", result)
+        return result
 
     async def get_service_categories(self, master_id: str) -> dict[str, dict[str, Any]]:
+        key = f"cats:{master_id}"
+        cached = _cache_get(key, CATS_TTL)
+        if cached is not None:
+            return cached
+
         q = urlencode({"lang": "ru", "company": self.company_id, "master": master_id, "share": ""})
         d = await self._get_json(f"{BASE_URL}/mobile/ajax/newrecord/company_services/?{q}")
         raw = d.get("data", {}).get("list", {})
@@ -74,6 +120,7 @@ class DikidiClient:
                 }
         if not out:
             raise DikidiError("Для специалиста не найдены услуги")
+        _cache_put(key, out)
         return out
 
     async def get_services(self, master_id: str) -> dict[str, dict[str, Any]]:
@@ -111,6 +158,11 @@ class DikidiClient:
         return [str(x) for x in raw] if isinstance(raw, list) else []
 
     async def available_slots(self, service_id: str, master_id: str, target_date: date) -> list[datetime]:
+        key = f"slots:{service_id}:{master_id}:{target_date.isoformat()}"
+        cached = _cache_get(key, SLOTS_TTL)
+        if cached is not None:
+            return cached
+
         dates = await self.get_dates(service_id, master_id, target_date, target_date)
         slots: list[datetime] = []
         for ds in dates:
@@ -128,7 +180,9 @@ class DikidiClient:
                             slots.append(dt)
                     except ValueError:
                         pass
-        return sorted(set(slots))
+        result = sorted(set(slots))
+        _cache_put(key, result)
+        return result
 
 
 def service_id_from_url(url: str) -> str | None:
