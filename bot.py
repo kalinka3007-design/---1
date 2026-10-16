@@ -1,3 +1,4 @@
+# bot.py
 import os
 import re
 import time
@@ -24,6 +25,10 @@ from content import (
     chat_url,
 )
 
+# --- общие хелперы и поиск окон ---
+from utils import kb, hp, safe_edit, MAX_MSG_LEN
+from slot_finder import slot_callback, SLOT_FINDER_PREFIX
+
 # ==============================================
 # ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ
 # ==============================================
@@ -36,7 +41,6 @@ if not TELEGRAM_TOKEN:
 ADMIN_ID = int(ADMIN_CHAT_ID) if ADMIN_CHAT_ID else None
 
 PREP_SECTIONS = ("epilation", "laser", "depilation")
-MAX_MSG_LEN = 4000
 MAX_CALLBACK_LEN = 60
 
 MSK = datetime.timezone(datetime.timedelta(hours=3))
@@ -167,13 +171,7 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
 # ==============================================
 # УТИЛИТЫ
 # ==============================================
-
-def hp(path: str, text: str) -> str:
-    return f"🏠 → {path}\n\n{text}"
-
-
-def kb(*rows):
-    return InlineKeyboardMarkup(list(rows))
+# kb / hp / safe_edit / split_text / MAX_MSG_LEN — импортированы из utils.py
 
 
 def parse_price(price_str: str) -> int:
@@ -185,24 +183,6 @@ def parse_price(price_str: str) -> int:
 
 def format_money(n: int) -> str:
     return f"{n:,}".replace(",", " ")
-
-
-def split_text(text: str, limit: int = MAX_MSG_LEN):
-    if len(text) <= limit:
-        return [text]
-    parts = []
-    remaining = text
-    while len(remaining) > limit:
-        split_at = remaining.rfind("\n\n", 0, limit)
-        if split_at == -1:
-            split_at = remaining.rfind("\n", 0, limit)
-        if split_at == -1:
-            split_at = limit
-        parts.append(remaining[:split_at])
-        remaining = remaining[split_at:].lstrip()
-    if remaining:
-        parts.append(remaining)
-    return parts
 
 
 def find_service(service_callback: str):
@@ -244,56 +224,6 @@ def _back_title_for(code):
         "body":        "выбору процедуры",
         "cosmetology": "эстетике лица",
     }.get(code, "назад")
-
-
-# ==============================================
-# БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ
-# ==============================================
-
-async def safe_edit(query, context, text, reply_markup=None):
-    parts = split_text(text)
-
-    if len(parts) == 1:
-        try:
-            await query.edit_message_text(text, reply_markup=reply_markup)
-            return
-        except Exception as e:
-            err = str(e)
-            print(f"⚠️ edit_message_text: {err}")
-            if "message is not modified" in err:
-                return
-            if "Too Many Requests" in err or "retry after" in err.lower():
-                return
-            if ADMIN_ID:
-                try:
-                    await context.bot.send_message(
-                        chat_id=ADMIN_ID,
-                        text=f"⚠️ Ошибка edit_message_text\n\n{err}"
-                    )
-                except Exception:
-                    pass
-            return
-
-    try:
-        await query.edit_message_text(parts[0])
-    except Exception as e:
-        print(f"⚠️ Первая часть не отредактирована: {e}")
-
-    for i, part in enumerate(parts[1:], 1):
-        try:
-            await context.bot.send_message(chat_id=query.message.chat_id, text=part)
-        except Exception as e:
-            print(f"⚠️ Часть {i}: {e}")
-
-    if reply_markup:
-        try:
-            await context.bot.send_message(
-                chat_id=query.message.chat_id,
-                text="⬇️",
-                reply_markup=reply_markup
-            )
-        except Exception as e:
-            print(f"⚠️ Кнопки: {e}")
 
 
 # ==============================================
@@ -527,14 +457,17 @@ async def universal_callback(update, context):
 # ==============================================
 
 async def show_booking(update, context):
+    """Развилка: старая ветка (услуга первой) или новая (мастер первым)."""
     query = update.callback_query
-    keyboard = []
-    for code, cat in BOOKING.items():
-        keyboard.append([InlineKeyboardButton(cat["title"], callback_data=f"book:{code}")])
-    keyboard.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+    keyboard = [
+        [InlineKeyboardButton("📋 Выбрать услугу",  callback_data="book:start_services")],
+        [InlineKeyboardButton("👩 Выбрать мастера", callback_data="slot:start")],
+        [InlineKeyboardButton("🏠 В начало",        callback_data="main:menu")],
+    ]
     await safe_edit(
         query, context,
-        hp("📅 Хочу записаться", "📅 Хочу записаться\n\nВыберите тип услуги:"),
+        hp("📅 Хочу записаться",
+           "📅 Хочу записаться\n\nКак вам удобнее выбрать?"),
         kb(*keyboard)
     )
 
@@ -542,6 +475,20 @@ async def show_booking(update, context):
 async def booking_callback(update, context):
     query = update.callback_query
     data = query.data
+
+    # --- НОВАЯ ветка: переход к старому дереву категорий ---
+    if data == "book:start_services":
+        keyboard = []
+        for code, cat in BOOKING.items():
+            keyboard.append([InlineKeyboardButton(cat["title"], callback_data=f"book:{code}")])
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="main:booking")])
+        keyboard.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+        await safe_edit(
+            query, context,
+            hp("📅 Хочу записаться", "📅 Выберите тип услуги:"),
+            kb(*keyboard)
+        )
+        return
 
     if data.startswith("book:"):
         code = data.split(":", 1)[1]
@@ -1402,12 +1349,13 @@ async def handle_message(update, context):
     text_lower = user_text.lower()
 
     if any(k in text_lower for k in ["записаться", "запись", "запишите"]):
-        keyboard = []
-        for code, cat in BOOKING.items():
-            keyboard.append([InlineKeyboardButton(cat["title"], callback_data=f"book:{code}")])
-        keyboard.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+        keyboard = [
+            [InlineKeyboardButton("📋 Выбрать услугу",  callback_data="book:start_services")],
+            [InlineKeyboardButton("👩 Выбрать мастера", callback_data="slot:start")],
+            [InlineKeyboardButton("🏠 В начало",        callback_data="main:menu")],
+        ]
         await update.message.reply_text(
-            hp("📅 Хочу записаться", "📅 Хочу записаться\n\nВыберите тип услуги:"),
+            hp("📅 Хочу записаться", "📅 Хочу записаться\n\nКак вам удобнее выбрать?"),
             reply_markup=kb(*keyboard)
         )
         return
@@ -1513,7 +1461,12 @@ def run_bot():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("reply", reply_to_user))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(slot_callback, pattern=r"^slot:"))   # ← NEW
     app.add_handler(CallbackQueryHandler(universal_callback))
 
     print("✅ Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    run_bot()
