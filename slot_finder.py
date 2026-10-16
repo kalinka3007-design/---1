@@ -9,7 +9,7 @@ from datetime import date, timedelta
 from telegram import InlineKeyboardButton, Update
 from telegram.ext import ContextTypes
 
-from content import BOOKING
+from content import BOOKING, chat_url
 from dikidi_client import DikidiClient, DikidiError, service_id_from_url
 from utils import kb, hp, safe_edit
 
@@ -17,7 +17,8 @@ log = logging.getLogger(__name__)
 
 SLOT_FINDER_PREFIX = "slot:"
 COMPANY_ID = os.getenv("DIKIDI_COMPANY_ID", "1330084")
-DAYS_AHEAD = 7
+DAYS_AHEAD = 14          # сколько дней сканируем
+MAX_DATES = 5            # сколько дат максимум показываем
 MASTER_ORDER = ["Алла", "Мария", "Алёна", "Римма", "Зульфия"]
 
 dikidi = DikidiClient(COMPANY_ID)
@@ -73,8 +74,9 @@ def _clear_master_state(user_data: dict):
         user_data.pop(k, None)
 
 
-async def _check_days(sid: str, mid: str):
-    """Параллельно проверяет 7 дней, возвращает [(day, slots), …] только с окнами."""
+async def _check_days(sid: str, mid: str) -> list[tuple[date, list]]:
+    """Сканирует DAYS_AHEAD дней, возвращает до MAX_DATES дат, где есть окна,
+    отсортированных по возрастанию."""
     today = date.today()
 
     async def check(day: date):
@@ -86,7 +88,9 @@ async def _check_days(sid: str, mid: str):
             return None
 
     results = await asyncio.gather(*(check(today + timedelta(days=i)) for i in range(DAYS_AHEAD)))
-    return [r for r in results if r]
+    found = [r for r in results if r]
+    found.sort(key=lambda x: x[0])
+    return found[:MAX_DATES]
 
 
 # ---------- мастера ----------
@@ -109,8 +113,10 @@ async def slot_show_masters(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for mid, n in context.user_data["slot_masters"].items()]
     rows.append([InlineKeyboardButton("◀️ К выбору способа", callback_data="main:booking")])
     rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
-    await safe_edit(q, context, hp("📅 Хочу записаться → Мастера",
-                                    "👩 Выбери специалиста:"), kb(*rows))
+    await safe_edit(q, context,
+                    hp("📅 Хочу записаться → Мастера",
+                       "👩 Выбери специалиста:"),
+                    kb(*rows))
 
 
 # ---------- мастер выбран → фильтр BOOKING ----------
@@ -199,7 +205,8 @@ async def slot_show_category(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         kb(*rows))
         return
 
-    await _render_services(update, context, cat["services"], parent_code=code, breadcrumb=cat["title"])
+    await _render_services(update, context, cat["services"],
+                           parent_code=code, breadcrumb=cat["title"])
 
 
 # ---------- подкатегория ----------
@@ -234,7 +241,8 @@ async def slot_show_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await _render_services(update, context, sub["services"],
-                           parent_code=parent_code, sub_code=sub_code, breadcrumb=sub["title"])
+                           parent_code=parent_code, sub_code=sub_code,
+                           breadcrumb=sub["title"])
 
 
 async def slot_show_sub2(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -252,8 +260,8 @@ async def slot_show_sub2(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["slot_path"] = [parent_code, sub_code, sub2_code]
     await _render_services(update, context, sub2["services"],
-                           parent_code=parent_code, sub_code=sub_code, sub2_code=sub2_code,
-                           breadcrumb=sub2["title"])
+                           parent_code=parent_code, sub_code=sub_code,
+                           sub2_code=sub2_code, breadcrumb=sub2["title"])
 
 
 # ---------- список услуг ----------
@@ -288,7 +296,7 @@ async def _render_services(update, context, services, parent_code,
                     kb(*rows))
 
 
-# ---------- услуга выбрана → 7 дней ----------
+# ---------- услуга выбрана → 14 дней → 5 дат ----------
 
 async def slot_choose_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -313,17 +321,45 @@ async def slot_choose_service(update: Update, context: ContextTypes.DEFAULT_TYPE
     mid = context.user_data["slot_master_id"]
 
     days = await _check_days(sid, mid)
+    await _render_dates(q, context, days, s, name, back_cb)
 
-    rows = [[InlineKeyboardButton(d.strftime("%a %d.%m"), callback_data=f"slot:date:{d.isoformat()}")]
-            for d, _ in days]
-    if not rows:
-        rows = [[InlineKeyboardButton(f"На {DAYS_AHEAD} дней окон нет", callback_data="slot:noop")]]
-    rows.append([InlineKeyboardButton("◀️ К услугам", callback_data=back_cb)])
-    rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+
+async def _render_dates(q, context, days, service, master_name, back_cb):
+    header = f"👩 {master_name}\n✅ {service['name']} — {service['price']}"
+
+    if not days:
+        # 0 дат за 14 дней
+        text = (
+            f"{header}\n\n"
+            "⚠️ На ближайшие 14 дней свободных окон нет.\n\n"
+            "Можно попробовать другого мастера — "
+            "у него может быть другое расписание."
+        )
+        rows = [
+            [InlineKeyboardButton("👩 Выбрать другого мастера",
+                                   callback_data="slot:back:masters")],
+            [InlineKeyboardButton("◀️ К услугам", callback_data=back_cb)],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+    else:
+        rows = [[InlineKeyboardButton(d.strftime("%a %d.%m"),
+                                       callback_data=f"slot:date:{d.isoformat()}")]
+                for d, _ in days]
+
+        if len(days) < MAX_DATES:
+            text = (
+                f"{header}\n\nВыберите дату:\n\n"
+                "На ближайшие 14 дней больше окон нет."
+            )
+        else:
+            text = f"{header}\n\nВыберите дату:"
+
+        rows.append([InlineKeyboardButton("◀️ К услугам", callback_data=back_cb)])
+        rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
 
     await safe_edit(q, context,
-                    hp(f"📅 Хочу записаться → {name} → {s['name']}",
-                       f"👩 {name}\n✅ {s['name']} — {s['price']}\n\nВыберите дату:"),
+                    hp(f"📅 Хочу записаться → {master_name} → {service['name']}",
+                       text),
                     kb(*rows))
 
 
@@ -354,7 +390,7 @@ def _parse_service_cb(data: str, context):
     return None, ""
 
 
-# ---------- дата выбрана → времена ----------
+# ---------- дата выбрана → времена (URL-кнопки) ----------
 
 async def slot_show_times(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -388,47 +424,56 @@ async def slot_show_times(update: Update, context: ContextTypes.DEFAULT_TYPE):
                            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")]))
         return
 
+    mname = context.user_data["slot_master_name"]
+    sname = context.user_data["slot_service_name"]
+    date_str = day.strftime("%d.%m.%Y")
+
+    def make_url(t: str) -> str:
+        msg = (
+            f"Запишите меня на услугу «{sname}» "
+            f"у мастера {mname} на {date_str} в {t}."
+        )
+        return chat_url(msg)
+
     times = [s.strftime("%H:%M") for s in slots]
-    rows = [[InlineKeyboardButton(t, callback_data="slot:noop") for t in times[i:i+3]]
+    rows = [[InlineKeyboardButton(t, url=make_url(t)) for t in times[i:i + 3]]
             for i in range(0, len(times), 3)]
-    rows.append([InlineKeyboardButton("📅 Записаться",
-                                       url=context.user_data["slot_service_url"])])
+
     rows.append([InlineKeyboardButton("◀️ К датам", callback_data="slot:back:dates")])
     rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
 
-    name = context.user_data["slot_master_name"]
-    sname = context.user_data["slot_service_name"]
+    text = (
+        f"👩 {mname}\n"
+        f"✅ {sname}\n"
+        f"📅 {date_str}\n\n"
+        "Свободное время:\n\n"
+        "Нажмите на время — откроется чат с администратором "
+        "и готовым сообщением для записи.\n"
+        "Ожидайте подтверждения."
+    )
+
     await safe_edit(q, context,
-                    hp(f"📅 Хочу записаться → {name} → {sname}",
-                       f"👩 {name}\n✅ {sname}\n📅 {day.strftime('%d.%m.%Y')}\n\nСвободное время:"),
+                    hp(f"📅 Хочу записаться → {mname} → {sname}", text),
                     kb(*rows))
 
 
-# ---------- back ----------
+# ---------- back к датам ----------
 
 async def slot_back_to_dates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     sid = context.user_data.get("slot_service_id")
     mid = context.user_data.get("slot_master_id")
     sname = context.user_data.get("slot_service_name")
-    if not sid or not mid:
+    if not sid or not mid or not sname:
         await slot_show_masters(update, context)
         return
 
     days = await _check_days(sid, mid)
-    rows = [[InlineKeyboardButton(d.strftime("%a %d.%m"), callback_data=f"slot:date:{d.isoformat()}")]
-            for d, _ in days]
-    if not rows:
-        rows = [[InlineKeyboardButton(f"На {DAYS_AHEAD} дней окон нет", callback_data="slot:noop")]]
+    service = {"name": sname, "price": ""}
     back_cb = context.user_data.get("slot_back_to_services") or "slot:back:cats"
-    rows.append([InlineKeyboardButton("◀️ К услугам", callback_data=back_cb)])
-    rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
-
     name = context.user_data["slot_master_name"]
-    await safe_edit(q, context,
-                    hp(f"📅 Хочу записаться → {name} → {sname}",
-                       f"👩 {name}\n✅ {sname}\n\nВыберите дату:"),
-                    kb(*rows))
+
+    await _render_dates(q, context, days, service, name, back_cb)
 
 
 # ---------- роутер ----------
