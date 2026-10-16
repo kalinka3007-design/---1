@@ -13,6 +13,8 @@ from content import BOOKING, ABONEMENT_SECTIONS, chat_url
 from dikidi_client import DikidiClient, DikidiError, service_id_from_url
 from utils import kb, hp, safe_edit
 
+import stats_store
+
 log = logging.getLogger(__name__)
 
 SLOT_FINDER_PREFIX = "slot:"
@@ -208,6 +210,9 @@ async def slot_choose_master(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await slot_show_masters(update, context)
         return
 
+    stats_store.bump("funnel.master")
+    stats_store.save()
+
     context.user_data["slot_master_id"] = mid
     context.user_data["slot_master_name"] = name
     for k in ("slot_path", "slot_service_id", "slot_service_name",
@@ -267,6 +272,10 @@ async def slot_show_category(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not cat:
         await _render_categories(update, context)
         return
+
+    stats_store.bump("funnel.category")
+    stats_store.bump_category(code)
+    stats_store.save()
 
     context.user_data["slot_path"] = [code]
     name = context.user_data["slot_master_name"]
@@ -398,6 +407,9 @@ async def slot_show_masters_for_service(update: Update, context: ContextTypes.DE
                            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")]))
         return
 
+    stats_store.bump("funnel.masters_for_service")
+    stats_store.save()
+
     context.user_data["slot_msrv_sid"] = sid
     context.user_data["slot_msrv_back_cb"] = back_cb
 
@@ -502,6 +514,9 @@ async def slot_choose_service(update: Update, context: ContextTypes.DEFAULT_TYPE
                            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")]))
         return
 
+    stats_store.bump("funnel.service")
+    stats_store.save()
+
     path = SERVICE_PATH.get(sid)
     booking_cb = path[0] if path else None
     parent_code = path[1] if path else None
@@ -570,8 +585,13 @@ async def _render_dates(q, context, days, service, master_name, back_cb):
     back_label = "◀️ К мастерам" if is_msrv else "◀️ К услугам"
     other_master_cb = "slot:msrv_back" if is_msrv else "slot:back:masters"
 
+    stats_store.bump("funnel.dates_shown")
+    stats_store.save()
+
     rows = []
     if not days:
+        stats_store.bump("funnel.no_slots_14days")
+        stats_store.save()
         text = (
             f"{header}\n\n"
             "⚠️ На ближайшие 14 дней свободных окон нет.\n\n"
@@ -652,6 +672,9 @@ async def slot_show_times(update: Update, context: ContextTypes.DEFAULT_TYPE):
                            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")]))
         return
 
+    stats_store.bump("funnel.times_shown")
+    stats_store.save()
+
     mname = context.user_data["slot_master_name"]
     sname = context.user_data["slot_service_name"]
     date_str = day.strftime("%d.%m.%Y")
@@ -700,6 +723,8 @@ async def slot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         if data == "slot:start":
+            stats_store.bump("funnel.masters_branch")
+            stats_store.save()
             await slot_show_masters(update, context)
             return
         if data == "slot:back:masters":
