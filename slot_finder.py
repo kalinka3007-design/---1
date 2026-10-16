@@ -27,11 +27,10 @@ dikidi = DikidiClient(COMPANY_ID)
 
 
 # ==============================================
-# ИНДЕКСЫ УСЛУГ
+# ИНДЕКСЫ УСЛУГ (по sid → сам объект и путь)
 # ==============================================
 
 def _build_indexes():
-    """service_id → service_dict и service_id → (booking_cb, parent_code)."""
     by_id: dict[str, dict] = {}
     path: dict[str, tuple[str, str]] = {}
     for cat_code, cat in BOOKING.items():
@@ -117,7 +116,6 @@ def _clear_msrv_state(user_data: dict):
 
 
 async def _check_days(sid: str, mid: str) -> list[tuple[date, list]]:
-    """Сканирует DAYS_AHEAD дней, возвращает до MAX_DATES дат, отсортированных по возрастанию."""
     today = date.today()
 
     async def check(day: date):
@@ -135,7 +133,6 @@ async def _check_days(sid: str, mid: str) -> list[tuple[date, list]]:
 
 
 async def _masters_for_service(sid: str) -> dict[str, str]:
-    """Мастера, у которых эта услуга реально есть в DiKidi."""
     try:
         masters = await dikidi.get_masters()
     except DikidiError as e:
@@ -158,7 +155,6 @@ async def _masters_for_service(sid: str) -> dict[str, str]:
 
 
 def _prep_and_abonement_rows(sid: str) -> list:
-    """Кнопки «📦 Абонемент» и «📚 Подготовка» для экранов дат/времён."""
     rows = []
     path = SERVICE_PATH.get(sid)
     if not path:
@@ -176,7 +172,7 @@ def _prep_and_abonement_rows(sid: str) -> list:
 
 
 # ==============================================
-# ВЕТКА «СНАЧАЛА МАСТЕР» (новая)
+# НОВАЯ ВЕТКА: СНАЧАЛА МАСТЕР
 # ==============================================
 
 async def slot_show_masters(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -275,20 +271,26 @@ async def slot_show_category(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["slot_path"] = [code]
     name = context.user_data["slot_master_name"]
 
+    rows = []
+    # 1) подкатегории (если есть)
     if "sub" in cat:
-        rows = [[InlineKeyboardButton(sub["title"],
-                                       callback_data=f"slot:sub:{code}:{sub['code']}")]
-                for sub in cat["sub"]]
-        rows.append([InlineKeyboardButton("◀️ К категориям", callback_data="slot:back:cats")])
-        rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
-        await safe_edit(q, context,
-                        hp(f"📅 Хочу записаться → {name} → {cat['title']}",
-                           f"{cat['title']}\n\nВыберите раздел:"),
-                        kb(*rows))
-        return
+        for sub in cat["sub"]:
+            rows.append([InlineKeyboardButton(sub["title"],
+                                              callback_data=f"slot:sub:{code}:{sub['code']}")])
+    # 2) прямые услуги верхнего уровня (если есть)
+    if "services" in cat:
+        for i, s in enumerate(cat["services"]):
+            rows.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
+                                              callback_data=f"slot:srv:{code}:{i}")])
 
-    await _render_services(update, context, cat["services"],
-                           parent_code=code, breadcrumb=cat["title"])
+    rows.append([InlineKeyboardButton("◀️ К категориям", callback_data="slot:back:cats")])
+    rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+
+    hint = "Выберите раздел:" if "sub" in cat else "Выберите услугу:"
+    await safe_edit(q, context,
+                    hp(f"📅 Хочу записаться → {name} → {cat['title']}",
+                       f"{cat['title']}\n\n{hint}"),
+                    kb(*rows))
 
 
 async def slot_show_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -312,7 +314,8 @@ async def slot_show_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = [[InlineKeyboardButton(sub2["title"],
                                        callback_data=f"slot:sub2:{parent_code}:{sub_code}:{sub2['code']}")]
                 for sub2 in sub["sub"]]
-        rows.append([InlineKeyboardButton("◀️ Назад", callback_data=f"slot:cat:{parent_code}")])
+        rows.append([InlineKeyboardButton("◀️ К категориям",
+                                           callback_data=f"slot:cat:{parent_code}")])
         rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
         await safe_edit(q, context,
                         hp(f"📅 Хочу записаться → {name} → {parent['title']} → {sub['title']}",
@@ -322,7 +325,7 @@ async def slot_show_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await _render_services(update, context, sub["services"],
                            parent_code=parent_code, sub_code=sub_code,
-                           breadcrumb=sub["title"])
+                           breadcrumb=sub["title"], description=sub.get("description"))
 
 
 async def slot_show_sub2(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -345,7 +348,7 @@ async def slot_show_sub2(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _render_services(update, context, services, parent_code,
-                           sub_code=None, sub2_code=None, breadcrumb=""):
+                           sub_code=None, sub2_code=None, breadcrumb="", description=None):
     q = update.callback_query
     name = context.user_data["slot_master_name"]
 
@@ -359,6 +362,7 @@ async def _render_services(update, context, services, parent_code,
             cb = f"slot:srv:{parent_code}:{idx}"
         rows.append([InlineKeyboardButton(f"{s['name']} — {s['price']}", callback_data=cb)])
 
+    # Кнопка «Назад» — всегда на 1 уровень вверх
     if sub_code and sub2_code:
         back_cb = f"slot:sub:{parent_code}:{sub_code}"
     elif sub_code:
@@ -368,14 +372,18 @@ async def _render_services(update, context, services, parent_code,
     rows.append([InlineKeyboardButton("◀️ Назад", callback_data=back_cb)])
     rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
 
+    text = f"{breadcrumb}\n\n"
+    if description:
+        text += f"{description}\n\n"
+    text += "Выберите услугу:"
+
     await safe_edit(q, context,
-                    hp(f"📅 Хочу записаться → {name} → {breadcrumb}",
-                       f"{breadcrumb}\n\nВыберите услугу:"),
+                    hp(f"📅 Хочу записаться → {name} → {breadcrumb}", text),
                     kb(*rows))
 
 
 # ==============================================
-# ВЕТКА «СНАЧАЛА УСЛУГА → МАСТЕРА ДЛЯ НЕЁ» (старая)
+# СТАРАЯ ВЕТКА: УСЛУГА ВЫБРАНА → МАСТЕРА ДЛЯ НЕЁ
 # ==============================================
 
 async def slot_show_masters_for_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -420,6 +428,31 @@ async def slot_show_masters_for_service(update: Update, context: ContextTypes.DE
                     kb(*rows))
 
 
+async def _msrv_back_render(update, context):
+    q = update.callback_query
+    sid = context.user_data.get("slot_msrv_sid")
+    if not sid:
+        await slot_show_masters(update, context)
+        return
+    service = SERVICE_BY_ID.get(sid)
+    if not service:
+        await slot_show_masters(update, context)
+        return
+    filtered = await _masters_for_service(sid)
+    sorted_masters = dict(_sort_masters(filtered))
+    context.user_data["slot_msrv_masters"] = sorted_masters
+    back_cb = context.user_data.get("slot_msrv_back_cb") or "main:booking"
+
+    rows = [[InlineKeyboardButton(n, callback_data=f"slot:msrv_go:{mid}")]
+            for mid, n in sorted_masters.items()]
+    rows.append([InlineKeyboardButton("◀️ К услугам", callback_data=back_cb)])
+    rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+    await safe_edit(q, context,
+                    hp(f"📅 Хочу записаться → {service['name']}",
+                       f"✅ {service['name']} — {service['price']}\n\nВыберите мастера:"),
+                    kb(*rows))
+
+
 async def slot_msrv_choose_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     mid = q.data.split(":", 2)[2]
@@ -455,33 +488,8 @@ async def slot_msrv_choose_master(update: Update, context: ContextTypes.DEFAULT_
     await _render_dates_from_state(q, context)
 
 
-async def _msrv_back_render(update, context):
-    q = update.callback_query
-    sid = context.user_data.get("slot_msrv_sid")
-    if not sid:
-        await slot_show_masters(update, context)
-        return
-    service = SERVICE_BY_ID.get(sid)
-    if not service:
-        await slot_show_masters(update, context)
-        return
-    filtered = await _masters_for_service(sid)
-    sorted_masters = dict(_sort_masters(filtered))
-    context.user_data["slot_msrv_masters"] = sorted_masters
-    back_cb = context.user_data.get("slot_msrv_back_cb") or "main:booking"
-
-    rows = [[InlineKeyboardButton(n, callback_data=f"slot:msrv_go:{mid}")]
-            for mid, n in sorted_masters.items()]
-    rows.append([InlineKeyboardButton("◀️ К услугам", callback_data=back_cb)])
-    rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
-    await safe_edit(q, context,
-                    hp(f"📅 Хочу записаться → {service['name']}",
-                       f"✅ {service['name']} — {service['price']}\n\nВыберите мастера:"),
-                    kb(*rows))
-
-
 # ==============================================
-# УСЛУГА ВЫБРАНА (новая ветка) → 14 дней
+# НОВАЯ ВЕТКА: УСЛУГА ВЫБРАНА
 # ==============================================
 
 async def slot_choose_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -539,7 +547,7 @@ def _parse_service_cb(data: str, context):
 
 
 # ==============================================
-# ЭКРАН ДАТ (общий для обеих веток)
+# ЭКРАН ДАТ (общий)
 # ==============================================
 
 async def _render_dates_from_state(q, context):
@@ -549,7 +557,7 @@ async def _render_dates_from_state(q, context):
     mname = context.user_data.get("slot_master_name", "")
     back_cb = context.user_data.get("slot_back_to_services") or "slot:back:cats"
     if not sid or not mid:
-        await slot_show_masters(None, context)
+        await slot_show_masters(update=None, context=context)
         return
 
     service = SERVICE_BY_ID.get(sid) or {"name": sname, "price": ""}
@@ -559,7 +567,9 @@ async def _render_dates_from_state(q, context):
 
 async def _render_dates(q, context, days, service, master_name, back_cb):
     sid = service_id_from_url(service.get("url", "")) or context.user_data.get("slot_service_id", "")
-    header = f"👩 {master_name}\n✅ {service['name']}" + (f" — {service['price']}" if service.get("price") else "")
+    header = f"👩 {master_name}\n✅ {service['name']}"
+    if service.get("price"):
+        header += f" — {service['price']}"
 
     is_msrv = (back_cb or "").startswith("slot:msrv")
     back_label = "◀️ К мастерам" if is_msrv else "◀️ К услугам"
@@ -586,7 +596,6 @@ async def _render_dates(q, context, days, service, master_name, back_cb):
         else:
             text = f"{header}\n\nВыберите дату:"
 
-    # «Абонемент» и «Подготовка»
     if sid:
         rows.extend(_prep_and_abonement_rows(sid))
 
@@ -609,139 +618,4 @@ async def slot_back_to_dates(update: Update, context: ContextTypes.DEFAULT_TYPE)
     back_cb = context.user_data.get("slot_back_to_services") or "slot:back:cats"
     mname = context.user_data.get("slot_master_name", "")
     days = await _check_days(sid, mid)
-    await _render_dates(q, context, days, service, mname, back_cb)
-
-
-# ==============================================
-# ЭКРАН ВРЕМЁН (URL-кнопки → чат с админом)
-# ==============================================
-
-async def slot_show_times(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    ds = q.data.split(":", 2)[2]
-    try:
-        day = date.fromisoformat(ds)
-    except ValueError:
-        await slot_show_masters(update, context)
-        return
-
-    sid = context.user_data.get("slot_service_id")
-    mid = context.user_data.get("slot_master_id")
-    if not sid or not mid:
-        await safe_edit(q, context, "⚠️ Сессия устарела. Начни заново.",
-                        kb([InlineKeyboardButton("🔄 Заново", callback_data="slot:start")],
-                           [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")]))
-        return
-
-    try:
-        slots = await dikidi.available_slots(sid, mid, day)
-    except DikidiError as e:
-        log.warning("slot times %s: %s", day, e)
-        await safe_edit(q, context, "⚠️ Не удалось получить расписание.",
-                        kb([InlineKeyboardButton("◀️ К датам", callback_data="slot:back:dates")],
-                           [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")]))
-        return
-
-    if not slots:
-        await safe_edit(q, context, f"На {day.strftime('%d.%m.%Y')} окон не осталось.",
-                        kb([InlineKeyboardButton("◀️ К датам", callback_data="slot:back:dates")],
-                           [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")]))
-        return
-
-    mname = context.user_data["slot_master_name"]
-    sname = context.user_data["slot_service_name"]
-    date_str = day.strftime("%d.%m.%Y")
-
-    def make_url(t: str) -> str:
-        msg = (
-            f"Запишите меня на услугу «{sname}» "
-            f"у мастера {mname} на {date_str} в {t}."
-        )
-        return chat_url(msg)
-
-    times = [s.strftime("%H:%M") for s in slots]
-    rows = [[InlineKeyboardButton(t, url=make_url(t)) for t in times[i:i + 3]]
-            for i in range(0, len(times), 3)]
-
-    rows.extend(_prep_and_abonement_rows(sid))
-    rows.append([InlineKeyboardButton("◀️ К датам", callback_data="slot:back:dates")])
-    rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
-
-    text = (
-        f"👩 {mname}\n"
-        f"✅ {sname}\n"
-        f"📅 {date_str}\n\n"
-        "Свободное время:\n\n"
-        "Нажмите на время — откроется чат с администратором "
-        "и готовым сообщением для записи.\n"
-        "Ожидайте подтверждения."
-    )
-
-    await safe_edit(q, context,
-                    hp(f"📅 Хочу записаться → {mname} → {sname}", text),
-                    kb(*rows))
-
-
-# ==============================================
-# РОУТЕР
-# ==============================================
-
-async def slot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    data = q.data
-    try:
-        await q.answer()
-    except Exception:
-        pass
-
-    try:
-        # --- точные ---
-        if data == "slot:start":
-            await slot_show_masters(update, context)
-            return
-        if data == "slot:back:masters":
-            await slot_show_masters(update, context)
-            return
-        if data == "slot:back:cats":
-            await _render_categories(update, context)
-            return
-        if data == "slot:back:dates":
-            await slot_back_to_dates(update, context)
-            return
-        if data == "slot:msrv_back":
-            await _msrv_back_render(update, context)
-            return
-        if data == "slot:noop":
-            return
-
-        # --- msrv_go и msrv: (важен порядок: сначала msrv_go) ---
-        if data.startswith("slot:msrv_go:"):
-            await slot_msrv_choose_master(update, context)
-            return
-        if data.startswith("slot:msrv:"):
-            await slot_show_masters_for_service(update, context)
-            return
-
-        # --- новая ветка ---
-        if data.startswith("slot:master:"):
-            await slot_choose_master(update, context)
-            return
-        if data.startswith("slot:cat:"):
-            await slot_show_category(update, context)
-            return
-        if data.startswith("slot:sub2:"):
-            await slot_show_sub2(update, context)
-            return
-        if data.startswith("slot:sub:"):
-            await slot_show_sub(update, context)
-            return
-        if data.startswith("slot:srv"):
-            await slot_choose_service(update, context)
-            return
-        if data.startswith("slot:date:"):
-            await slot_show_times(update, context)
-            return
-
-        log.warning("unknown slot callback: %s", data)
-    except Exception as e:
-        log.exception("slot callback error %s: %s", data, e)
+   
