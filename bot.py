@@ -4,7 +4,7 @@ import re
 import time
 import datetime
 import json
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton
 from telegram.ext import (
     Application, MessageHandler, CommandHandler,
     CallbackQueryHandler, filters, ContextTypes
@@ -168,7 +168,7 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==============================================
-# УТИЛИТЫ (kb / hp / safe_edit / split_text из utils.py)
+# УТИЛИТЫ
 # ==============================================
 
 def parse_price(price_str: str) -> int:
@@ -469,7 +469,7 @@ async def booking_callback(update, context):
     query = update.callback_query
     data = query.data
 
-    # --- НОВАЯ ветка: переход к старому дереву категорий ---
+    # --- Развилка: список категорий ---
     if data == "book:start_services":
         keyboard = []
         for code, cat in BOOKING.items():
@@ -483,6 +483,7 @@ async def booking_callback(update, context):
         )
         return
 
+    # --- Категория ---
     if data.startswith("book:"):
         code = data.split(":", 1)[1]
         cat = BOOKING.get(code)
@@ -495,38 +496,35 @@ async def booking_callback(update, context):
         stats["categories"][code] = stats["categories"].get(code, 0) + 1
         save_stats()
 
-        extra = []
-        if code in PREP_SECTIONS:
-            extra.append([InlineKeyboardButton(
-                "📚 Как подготовиться",
-                callback_data=f"prep:{code}"
-            )])
-        extra.append([InlineKeyboardButton("◀️ Вернуться к выбору услуги", callback_data="main:booking")])
-
+        # Основные ряды: группы (sub) + прямые услуги (services)
+        rows = []
         if "sub" in cat:
-            keyboard = []
             for sub in cat["sub"]:
-                keyboard.append([InlineKeyboardButton(sub["title"], callback_data=f"sub:{code}:{sub['code']}")])
-            await safe_edit(
-                query, context,
-                hp(f"📅 Хочу записаться → {cat['title']}",
-                   f"{cat['title']}\n\nВыберите раздел:"),
-                kb(*(keyboard + extra))
-            )
-            return
+                rows.append([InlineKeyboardButton(sub["title"],
+                                                   callback_data=f"sub:{code}:{sub['code']}")])
+        if "services" in cat:
+            for i, s in enumerate(cat["services"]):
+                rows.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
+                                                   callback_data=f"srv:{code}:{i}")])
 
-        keyboard = []
-        for i, s in enumerate(cat["services"]):
-            keyboard.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
-                                                  callback_data=f"srv:{code}:{i}")])
+        # Дополнительные кнопки
+        if code in PREP_SECTIONS:
+            rows.append([InlineKeyboardButton("📚 Как подготовиться",
+                                                callback_data=f"prep:{code}")])
+        # Назад — на 1 уровень вверх (к списку категорий)
+        rows.append([InlineKeyboardButton("◀️ К категориям", callback_data="book:start_services")])
+        rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+
+        hint = "Выберите раздел:" if "sub" in cat else "Выберите услугу:"
         await safe_edit(
             query, context,
             hp(f"📅 Хочу записаться → {cat['title']}",
-               f"{cat['title']}\n\nВыберите услугу:"),
-            kb(*(keyboard + extra))
+               f"{cat['title']}\n\n{hint}"),
+            kb(*rows)
         )
         return
 
+    # --- Подкатегория ---
     if data.startswith("sub:"):
         parts = data.split(":")
         parent_code, sub_code = parts[1], parts[2]
@@ -536,42 +534,39 @@ async def booking_callback(update, context):
             await safe_edit(query, context, "⚠️ Подкатегория не найдена.")
             return
 
-        extra = []
-        if parent_code in PREP_SECTIONS:
-            extra.append([InlineKeyboardButton(
-                "📚 Как подготовиться",
-                callback_data=f"prep:{parent_code}"
-            )])
-        extra.append([InlineKeyboardButton(f"◀️ Вернуться к {parent['title']}",
-                                           callback_data=f"book:{parent_code}")])
-
+        rows = []
         if "sub" in sub:
-            keyboard = []
             for s2 in sub["sub"]:
-                keyboard.append([InlineKeyboardButton(
+                rows.append([InlineKeyboardButton(
                     s2["title"],
                     callback_data=f"sub2:{parent_code}:{sub_code}:{s2['code']}"
                 )])
-            await safe_edit(
-                query, context,
-                hp(f"📅 Хочу записаться → {parent['title']} → {sub['title']}",
-                   f"{sub['title']}\n\nВыберите:"),
-                kb(*(keyboard + extra))
-            )
-            return
+        if "services" in sub:
+            for i, s in enumerate(sub["services"]):
+                rows.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
+                                                   callback_data=f"srv2:{parent_code}:{sub_code}:{i}")])
 
-        keyboard = []
-        for i, s in enumerate(sub["services"]):
-            keyboard.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
-                                                  callback_data=f"srv2:{parent_code}:{sub_code}:{i}")])
+        if parent_code in PREP_SECTIONS:
+            rows.append([InlineKeyboardButton("📚 Как подготовиться",
+                                                callback_data=f"prep:{parent_code}")])
+        # Назад — на 1 уровень вверх (к категории)
+        rows.append([InlineKeyboardButton(f"◀️ К {parent['title']}",
+                                            callback_data=f"book:{parent_code}")])
+        rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+
+        header = f"{sub['title']}\n\n"
+        if sub.get("description"):
+            header += f"{sub['description']}\n\n"
+        header += "Выберите:" if "sub" in sub else "Выберите услугу:"
+
         await safe_edit(
             query, context,
-            hp(f"📅 Хочу записаться → {parent['title']} → {sub['title']}",
-               f"{sub['title']}\n\nВыберите:"),
-            kb(*(keyboard + extra))
+            hp(f"📅 Хочу записаться → {parent['title']} → {sub['title']}", header),
+            kb(*rows)
         )
         return
 
+    # --- Под-подкатегория ---
     if data.startswith("sub2:"):
         parts = data.split(":")
         if len(parts) < 4:
@@ -582,28 +577,32 @@ async def booking_callback(update, context):
         sub = next(s for s in parent["sub"] if s["code"] == sub_code)
         sub2 = next(s for s in sub["sub"] if s["code"] == sub2_code)
 
-        extra = []
-        if parent_code in PREP_SECTIONS:
-            extra.append([InlineKeyboardButton(
-                "📚 Как подготовиться",
-                callback_data=f"prep:{parent_code}"
-            )])
-        extra.append([InlineKeyboardButton(f"◀️ Вернуться к {sub['title']}",
-                                           callback_data=f"sub:{parent_code}:{sub_code}")])
+        rows = []
+        for i, s in enumerate(sub2.get("services", [])):
+            rows.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
+                                                callback_data=f"srv3:{parent_code}:{sub_code}:{sub2_code}:{i}")])
 
-        keyboard = []
-        for i, s in enumerate(sub2["services"]):
-            keyboard.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
-                                                  callback_data=f"srv3:{parent_code}:{sub_code}:{sub2_code}:{i}")])
+        if parent_code in PREP_SECTIONS:
+            rows.append([InlineKeyboardButton("📚 Как подготовиться",
+                                                callback_data=f"prep:{parent_code}")])
+        # Назад — на 1 уровень вверх (к подкатегории)
+        rows.append([InlineKeyboardButton(f"◀️ К {sub['title']}",
+                                            callback_data=f"sub:{parent_code}:{sub_code}")])
+        rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+
+        header = f"{sub2['title']}\n\n"
+        if sub2.get("description"):
+            header += f"{sub2['description']}\n\n"
+        header += "Выберите:"
 
         await safe_edit(
             query, context,
-            hp(f"📅 Хочу записаться → {parent['title']} → {sub2['title']}",
-               f"{sub2['title']}\n\nВыберите:"),
-            kb(*(keyboard + extra))
+            hp(f"📅 Хочу записаться → {parent['title']} → {sub2['title']}", header),
+            kb(*rows)
         )
         return
 
+    # --- Услуга выбрана ---
     if data.startswith("srv:") and data.count(":") == 2:
         parts = data.split(":")
         code, idx = parts[1], int(parts[2])
@@ -614,7 +613,7 @@ async def booking_callback(update, context):
             query, context, s,
             service_callback=data,
             back_callback=f"book:{code}",
-            back_title=_back_title_for(code),
+            back_title="категориям",
             parent_code=code,
             breadcrumb=f"📅 Хочу записаться → {BOOKING[code]['title']}"
         )
@@ -670,7 +669,6 @@ async def show_service_result(query, context, service, service_callback,
     Кнопка «Проверить свободные окна» ведёт в slot-ветку."""
     sid = service_id_from_url(service.get("url", ""))
 
-    # Кнопки «абонемент» и «подготовка» — те же условия, что были раньше
     prep_cb = None
     if parent_code in PREP_SECTIONS:
         cb = f"prep_srv:{parent_code}:{service_callback}"
@@ -711,7 +709,7 @@ async def show_service_result(query, context, service, service_callback,
         keyboard.append([InlineKeyboardButton("📚 Как подготовиться",
                                                 callback_data=prep_cb)])
 
-    keyboard.append([InlineKeyboardButton(f"◀️ Вернуться к {back_title}",
+    keyboard.append([InlineKeyboardButton(f"◀️ К {back_title}",
                                             callback_data=back_callback)])
     keyboard.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
 
@@ -887,7 +885,7 @@ async def prep_callback(update, context):
         f"💆 Уход после {after_title}",
         callback_data=after_cb
     )])
-    keyboard.append([InlineKeyboardButton("◀️ Вернуться к подготовке", callback_data="main:prep")])
+    keyboard.append([InlineKeyboardButton("◀️ К подготовке", callback_data="main:prep")])
     keyboard.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
 
     await safe_edit(
@@ -921,4 +919,531 @@ async def after_callback(update, context):
     query = update.callback_query
     data = query.data
 
-   
+    from_service = False
+    back_to_service = None
+
+    if data.startswith("after_srv:"):
+        parts = data.split(":", 2)
+        code = parts[1]
+        back_to_service = parts[2] if len(parts) > 2 else None
+        from_service = True
+    else:
+        code = data.split(":", 1)[1]
+
+    text = AFTER_TEXTS.get(code, "Информация недоступна.")
+    titles = {
+        "epilation":  "электроэпиляции",
+        "laser":      "лазерной эпиляции",
+        "depilation": "депиляции",
+    }
+    prep_title = titles.get(code, "процедуры")
+
+    keyboard = []
+    if from_service and back_to_service:
+        keyboard.append([InlineKeyboardButton(
+            "↩️ Вернуться к записи",
+            callback_data=back_to_service
+        )])
+
+    if from_service and back_to_service:
+        prep_cb = f"prep_srv:{code}:{back_to_service}"
+    else:
+        prep_cb = f"prep:{code}"
+
+    keyboard.append([InlineKeyboardButton(
+        f"📚 Подготовка к {prep_title}",
+        callback_data=prep_cb
+    )])
+    keyboard.append([InlineKeyboardButton("◀️ К уходу", callback_data="main:after")])
+    keyboard.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+
+    await safe_edit(
+        query, context,
+        hp(f"💆 Уход → {prep_title}", text),
+        kb(*keyboard)
+    )
+
+
+# ==============================================
+# 4. ПРАЙС-ЛИСТ
+# ==============================================
+
+async def show_price_menu(update, context):
+    query = update.callback_query
+    keyboard = [
+        [InlineKeyboardButton("⚡ Электроэпиляция", callback_data="price:epilation")],
+        [InlineKeyboardButton("💡 Лазерная эпиляция", callback_data="price:laser")],
+        [InlineKeyboardButton("🌿 Депиляция (воск)", callback_data="price:depilation")],
+        [InlineKeyboardButton("🔸 Эстетика тела", callback_data="price:body")],
+        [InlineKeyboardButton("🔹 Эстетика лица", callback_data="price:cosmetology")],
+        [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+    ]
+    await safe_edit(
+        query, context,
+        hp("📋 Прайс-лист", "📋 Прайс-лист MintGlow\n\nВыберите раздел:"),
+        kb(*keyboard)
+    )
+
+
+async def price_callback(update, context):
+    query = update.callback_query
+    code = query.data.split(":", 1)[1]
+
+    text = PRICE_TEXTS.get(code, "Информация недоступна.")
+
+    keyboard = [[InlineKeyboardButton("📅 Записаться", callback_data="main:booking")]]
+    if code in PREP_SECTIONS:
+        keyboard.append([InlineKeyboardButton("📚 Как подготовиться", callback_data=f"prep:{code}")])
+    if code in ABONEMENT_SECTIONS:
+        keyboard.append([InlineKeyboardButton("📦 Узнать про абонемент",
+                                              callback_data="promo:subscriptions")])
+    keyboard.append([InlineKeyboardButton("◀️ К прайс-листу", callback_data="main:price")])
+    keyboard.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+
+    await safe_edit(
+        query, context,
+        hp(f"📋 Прайс-лист → {code}", text),
+        kb(*keyboard)
+    )
+
+
+# ==============================================
+# 5. АКЦИИ
+# ==============================================
+
+async def show_promo_menu(update, context):
+    query = update.callback_query
+    keyboard = [
+        [InlineKeyboardButton("⭐ Отзывы и бонусы", callback_data="promo:review")],
+        [InlineKeyboardButton("✨ Знакомство с мастером", callback_data="promo:new")],
+        [InlineKeyboardButton("📦 Абонементы", callback_data="promo:subscriptions")],
+        [InlineKeyboardButton("💰 Мои бонусы", callback_data="promo:bonus")],
+        [InlineKeyboardButton("🎁 Подарочный сертификат", callback_data="promo:certificate")],
+        [InlineKeyboardButton("👯 Приведи подругу", callback_data="promo:friend")],
+        [InlineKeyboardButton("📢 Другие акции", callback_data="promo:other")],
+        [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+    ]
+    await safe_edit(
+        query, context,
+        hp("🎁 Акции и бонусы",
+           "🎁 Акции и бонусы\n\n💡 Не нашли нужное? Нажмите «✍️ Задать вопрос»."),
+        kb(*keyboard)
+    )
+
+
+async def promo_callback(update, context):
+    query = update.callback_query
+    code = query.data.split(":", 1)[1]
+    text = PROMO_TEXTS.get(code, "Информация недоступна.")
+
+    if code == "review":
+        keyboard = [
+            [InlineKeyboardButton("Яндекс Карты", url=URL_REVIEW_YANDEX),
+             InlineKeyboardButton("2ГИС", url=URL_REVIEW_2GIS)],
+            [InlineKeyboardButton("Zoon", url=URL_REVIEW_Zoon),
+             InlineKeyboardButton("Google", url=URL_REVIEW_GOOGLE)],
+            [InlineKeyboardButton("Stilistic", url=URL_REVIEW_STILISTIC)],
+            [InlineKeyboardButton("💬 Сообщить об отзыве", url=URL_REVIEW)],
+            [InlineKeyboardButton("◀️ К акциям", callback_data="main:promo")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+    elif code == "new":
+        keyboard = [
+            [InlineKeyboardButton("📅 Записаться на электроэпиляцию",
+                                  callback_data="book:epilation")],
+            [InlineKeyboardButton("💬 Узнать подробнее", url=URL_NEW_MASTER)],
+            [InlineKeyboardButton("◀️ К акциям", callback_data="main:promo")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+    elif code == "subscriptions":
+        keyboard = [
+            [InlineKeyboardButton("💬 Узнать подробнее", url=URL_SUBSCRIPTION)],
+            [InlineKeyboardButton("◀️ К акциям", callback_data="main:promo")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+    elif code == "bonus":
+        keyboard = [
+            [InlineKeyboardButton("💬 Узнать баланс бонусов", url=URL_BONUS_BALANCE)],
+            [InlineKeyboardButton("◀️ К акциям", callback_data="main:promo")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+    elif code == "certificate":
+        keyboard = [
+            [InlineKeyboardButton("💬 Купить сертификат", url=URL_CERTIFICATE)],
+            [InlineKeyboardButton("◀️ К акциям", callback_data="main:promo")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+    elif code == "friend":
+        keyboard = [
+            [InlineKeyboardButton("💬 Сообщить администратору", url=URL_FRIEND)],
+            [InlineKeyboardButton("◀️ К акциям", callback_data="main:promo")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+    elif code == "other":
+        keyboard = [
+            [InlineKeyboardButton("💬 Уточнить актуальные акции", url=URL_QUESTION)],
+            [InlineKeyboardButton("✈️ Telegram-канал", url=URL_TELEGRAM_CHANNEL)],
+            [InlineKeyboardButton("📸 Instagram", url=URL_INSTAGRAM)],
+            [InlineKeyboardButton("🅥 VK", url=URL_VK)],
+            [InlineKeyboardButton("◀️ К акциям", callback_data="main:promo")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("◀️ К акциям", callback_data="main:promo")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+
+    await safe_edit(query, context, hp(f"🎁 Акции → {code}", text), kb(*keyboard))
+
+
+# ==============================================
+# 6. О СТУДИИ
+# ==============================================
+
+async def show_about_menu(update, context):
+    query = update.callback_query
+    keyboard = [
+        [InlineKeyboardButton("👩‍🎨 Наши мастера",            callback_data="about:masters")],
+        [InlineKeyboardButton("📍 Как добраться",            callback_data="about:route")],
+        [InlineKeyboardButton("⭐ Оставить отзыв",           callback_data="about:review")],
+        [InlineKeyboardButton("📢 Мы в соцсетях",            callback_data="about:social")],
+        [InlineKeyboardButton("❓ Ответы про запись и оплату", callback_data="about:faq")],
+        [InlineKeyboardButton("📖 Отзывы клиентов",          callback_data="about:client_reviews")],
+        [InlineKeyboardButton("🏠 В начало",                 callback_data="main:menu")],
+    ]
+    await safe_edit(
+        query, context,
+        hp("ℹ️ О студии", "ℹ️ О студии\n\nВыберите раздел:"),
+        kb(*keyboard)
+    )
+
+
+async def about_callback(update, context):
+    query = update.callback_query
+    data = query.data.split(":", 1)[1]
+
+    if data == "masters":
+        keyboard = []
+        for code, m in MASTERS.items():
+            keyboard.append([InlineKeyboardButton(m["title"], callback_data=f"master:{code}")])
+        keyboard.append([InlineKeyboardButton("◀️ К разделу «О студии»",
+                                              callback_data="main:about")])
+        keyboard.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+        await safe_edit(
+            query, context,
+            hp("ℹ️ О студии → Наши мастера",
+               "👩‍🎨 Наши мастера\n\nВыберите мастера:"),
+            kb(*keyboard)
+        )
+        return
+
+    if data == "route":
+        keyboard = [
+            [InlineKeyboardButton("📸 Фото входа", url=URL_ENTRANCE_PHOTO)],
+            [InlineKeyboardButton("🗺 Яндекс.Карты", url=URL_MAPS_YANDEX)],
+            [InlineKeyboardButton("🗺 Google Maps", url=URL_MAPS_GOOGLE)],
+            [InlineKeyboardButton("◀️ К разделу «О студии»", callback_data="main:about")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+        await safe_edit(query, context, hp("ℹ️ О студии → Как добраться", ADDRESS_TEXT), kb(*keyboard))
+        return
+
+    if data == "review":
+        text = (
+            "⭐ Ваше мнение очень важно!\n\n"
+            "За отзыв начисляем +300 баллов,\n"
+            "за отзыв с фото — +100 баллов.\n\n"
+            "Оставить отзыв:\n\n"
+            "После того как вы оставили отзыв — нажмите кнопку ниже, "
+            "и отправьте скриншот, чтобы администратор начислил бонусы."
+        )
+        keyboard = [
+            [InlineKeyboardButton("Яндекс Карты", url=URL_REVIEW_YANDEX),
+             InlineKeyboardButton("2ГИС", url=URL_REVIEW_2GIS)],
+            [InlineKeyboardButton("Zoon", url=URL_REVIEW_Zoon),
+             InlineKeyboardButton("Google", url=URL_REVIEW_GOOGLE)],
+            [InlineKeyboardButton("Stilistic", url=URL_REVIEW_STILISTIC)],
+            [InlineKeyboardButton("💬 Сообщить об отзыве", url=URL_REVIEW)],
+            [InlineKeyboardButton("◀️ К разделу «О студии»", callback_data="main:about")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+        await safe_edit(query, context, hp("ℹ️ О студии → Оставить отзыв", text), kb(*keyboard))
+        return
+
+    if data == "social":
+        text = (
+            "📢 Мы в соцсетях\n\n"
+            "• Telegram-канал — акции и горящие места\n"
+            "• Instagram — фото, отзывы, истории\n"
+            "• VK — новости студии"
+        )
+        keyboard = [
+            [InlineKeyboardButton("✈️ Telegram-канал", url=URL_TELEGRAM_CHANNEL)],
+            [InlineKeyboardButton("📸 Instagram", url=URL_INSTAGRAM)],
+            [InlineKeyboardButton("🅥 VK", url=URL_VK)],
+            [InlineKeyboardButton("◀️ К разделу «О студии»", callback_data="main:about")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+        await safe_edit(query, context, hp("ℹ️ О студии → Соцсети", text), kb(*keyboard))
+        return
+
+    if data == "faq":
+        keyboard = [
+            [InlineKeyboardButton("Как можно оплатить?", callback_data="faq:pay")],
+            [InlineKeyboardButton("Как отменить или перенести запись?", callback_data="faq:cancel")],
+            [InlineKeyboardButton("Что делать, если опаздываю?", callback_data="faq:late")],
+            [InlineKeyboardButton("Можно ли записаться день в день?", callback_data="faq:same_day")],
+            [InlineKeyboardButton("Как связаться с администратором?", callback_data="faq:contact")],
+            [InlineKeyboardButton("◀️ К разделу «О студии»", callback_data="main:about")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+        await safe_edit(
+            query, context,
+            hp("ℹ️ О студии → Ответы про запись и оплату",
+               "❓ Ответы про запись и оплату\n\nВыберите вопрос:"),
+            kb(*keyboard)
+        )
+        return
+
+    if data == "client_reviews":
+        text = (
+            "📖 Отзывы клиентов\n\n"
+            "Читайте реальные отзывы о студии MintGlow на Яндекс.Картах."
+        )
+        keyboard = [
+            [InlineKeyboardButton("📖 Читать отзывы", url=URL_CLIENT_REVIEWS)],
+            [InlineKeyboardButton("◀️ К разделу «О студии»", callback_data="main:about")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+        await safe_edit(query, context, hp("ℹ️ О студии → Отзывы клиентов", text), kb(*keyboard))
+        return
+
+
+async def master_callback(update, context):
+    query = update.callback_query
+    code = query.data.split(":", 1)[1]
+    m = MASTERS.get(code)
+    if not m:
+        await safe_edit(query, context, "⚠️ Мастер не найден.")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("📅 Записаться", url=DIKIDI_URL)],
+        [InlineKeyboardButton("◀️ К мастерам", callback_data="about:masters")],
+        [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+    ]
+    await safe_edit(
+        query, context,
+        hp(f"ℹ️ О студии → Мастера → {m['title']}", m["card"]),
+        kb(*keyboard)
+    )
+
+
+# ==============================================
+# FAQ
+# ==============================================
+
+async def faq_callback(update, context):
+    query = update.callback_query
+    code = query.data.split(":", 1)[1]
+
+    if code == "contact":
+        text = f"📞 {PHONE_DISPLAY}\n(нажмите, чтобы позвонить)"
+        keyboard = [
+            [InlineKeyboardButton("📞 Позвонить", url=PHONE_TEL)],
+            [InlineKeyboardButton("✈️ Telegram", url=URL_QUESTION)],
+            [InlineKeyboardButton("💬 WhatsApp", url=URL_WHATSAPP)],
+            [InlineKeyboardButton("📱 МАХ", url=URL_MAX)],
+            [InlineKeyboardButton("◀️ К вопросам", callback_data="about:faq")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+        await safe_edit(query, context, hp("ℹ️ О студии → FAQ → Связь", text), kb(*keyboard))
+        return
+
+    text = FAQ_TEXTS.get(code, "Информация недоступна.")
+
+    if code == "cancel":
+        keyboard = [
+            [InlineKeyboardButton("🔄 Перенести запись", url=URL_TRANSFER)],
+            [InlineKeyboardButton("❌ Отменить запись", url=URL_CANCEL)],
+            [InlineKeyboardButton("◀️ К вопросам", callback_data="about:faq")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+    elif code == "pay":
+        keyboard = [
+            [InlineKeyboardButton("💬 Написать администратору", url=URL_PAYMENT)],
+            [InlineKeyboardButton("◀️ К вопросам", callback_data="about:faq")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+    elif code == "late":
+        keyboard = [
+            [InlineKeyboardButton("💬 Написать администратору", url=URL_LATE)],
+            [InlineKeyboardButton("◀️ К вопросам", callback_data="about:faq")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+    elif code == "same_day":
+        keyboard = [
+            [InlineKeyboardButton("💬 Написать администратору", url=URL_SAME_DAY)],
+            [InlineKeyboardButton("◀️ К вопросам", callback_data="about:faq")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("◀️ К вопросам", callback_data="about:faq")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+
+    await safe_edit(query, context, hp("ℹ️ О студии → FAQ", text), kb(*keyboard))
+
+
+# ==============================================
+# 7. ЗАДАТЬ ВОПРОС
+# ==============================================
+
+async def show_ask(update, context):
+    query = update.callback_query
+    text = (
+        "✍️ Задать вопрос администратору\n\n"
+        "Перейдите в чат со студией — администратор ответит в ближайшее время."
+    )
+    keyboard = [
+        [InlineKeyboardButton("💬 Написать администратору", url=URL_QUESTION)],
+        [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+    ]
+    await safe_edit(query, context, hp("✍️ Задать вопрос", text), kb(*keyboard))
+
+
+# ==============================================
+# ОБРАБОТКА ТЕКСТА
+# ==============================================
+
+async def handle_message(update, context):
+    user_text = update.message.text or ""
+    if not user_text.strip():
+        return
+
+    text_lower = user_text.lower()
+
+    if any(k in text_lower for k in ["записаться", "запись", "запишите"]):
+        keyboard = [
+            [InlineKeyboardButton("📋 Выбрать услугу",  callback_data="book:start_services")],
+            [InlineKeyboardButton("👩 Выбрать мастера", callback_data="slot:start")],
+            [InlineKeyboardButton("🏠 В начало",        callback_data="main:menu")],
+        ]
+        await update.message.reply_text(
+            hp("📅 Хочу записаться", "📅 Хочу записаться\n\nКак вам удобнее выбрать?"),
+            reply_markup=kb(*keyboard)
+        )
+        return
+
+    if any(k in text_lower for k in ["подготовка", "подготовиться"]):
+        keyboard = [
+            [InlineKeyboardButton("⚡ Электроэпиляция", callback_data="prep:epilation")],
+            [InlineKeyboardButton("💡 Лазерная эпиляция", callback_data="prep:laser")],
+            [InlineKeyboardButton("🌿 Депиляция", callback_data="prep:depilation")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+        await update.message.reply_text(
+            hp("📚 Подготовка к эпиляции", "📚 Подготовка к эпиляции\n\nВыберите тип:"),
+            reply_markup=kb(*keyboard)
+        )
+        return
+
+    if any(k in text_lower for k in ["уход", "после процедуры"]):
+        keyboard = [
+            [InlineKeyboardButton("⚡ Электроэпиляция", callback_data="after:epilation")],
+            [InlineKeyboardButton("💡 Лазерная эпиляция", callback_data="after:laser")],
+            [InlineKeyboardButton("🌿 Депиляция", callback_data="after:depilation")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+        await update.message.reply_text(
+            hp("💆 Уход после эпиляции", "💆 Уход после эпиляции\n\nВыберите тип:"),
+            reply_markup=kb(*keyboard)
+        )
+        return
+
+    if any(k in text_lower for k in ["акции", "скидки", "бонусы"]):
+        keyboard = [
+            [InlineKeyboardButton("⭐ Отзывы и бонусы", callback_data="promo:review")],
+            [InlineKeyboardButton("✨ Знакомство с мастером", callback_data="promo:new")],
+            [InlineKeyboardButton("📦 Абонементы", callback_data="promo:subscriptions")],
+            [InlineKeyboardButton("💰 Мои бонусы", callback_data="promo:bonus")],
+            [InlineKeyboardButton("🎁 Подарочный сертификат", callback_data="promo:certificate")],
+            [InlineKeyboardButton("👯 Приведи подругу", callback_data="promo:friend")],
+            [InlineKeyboardButton("📢 Другие акции", callback_data="promo:other")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+        await update.message.reply_text(
+            hp("🎁 Акции и бонусы", "🎁 Акции и бонусы\n\nВыберите раздел:"),
+            reply_markup=kb(*keyboard)
+        )
+        return
+
+    if any(k in text_lower for k in ["цена", "прайс", "стоимость"]):
+        keyboard = [
+            [InlineKeyboardButton("⚡ Электроэпиляция", callback_data="price:epilation")],
+            [InlineKeyboardButton("💡 Лазерная эпиляция", callback_data="price:laser")],
+            [InlineKeyboardButton("🌿 Депиляция", callback_data="price:depilation")],
+            [InlineKeyboardButton("🔸 Эстетика тела", callback_data="price:body")],
+            [InlineKeyboardButton("🔹 Эстетика лица", callback_data="price:cosmetology")],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+        await update.message.reply_text(
+            hp("📋 Прайс-лист", "📋 Прайс-лист MintGlow\n\nВыберите раздел:"),
+            reply_markup=kb(*keyboard)
+        )
+        return
+
+    sent = await notify_admin(update, context, tag="", extra=f"💬 Сообщение: {user_text}")
+
+    if sent:
+        text = (
+            "✍️ Я передал ваш вопрос администратору. "
+            "Он ответит в ближайшее время.\n\n"
+            "Если срочно — напишите напрямую:"
+        )
+    else:
+        text = (
+            "✍️ Ваш вопрос будет передан администратору.\n\n"
+            "Если срочно — напишите напрямую:"
+        )
+
+    keyboard = [
+        [InlineKeyboardButton("💬 Написать администратору", url=URL_QUESTION)],
+        [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+    ]
+    await update.message.reply_text(text, reply_markup=kb(*keyboard))
+
+
+# ==============================================
+# ЗАПУСК
+# ==============================================
+
+def run_bot():
+    print("⏳ Ожидание 5 секунд перед запуском...")
+    time.sleep(5)
+
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    if app.job_queue is not None:
+        try:
+            app.job_queue.run_daily(send_daily_report, time=REPORT_TIME)
+            print("📅 Отчёт будет отправляться ежедневно в 10:00 МСК")
+        except Exception as e:
+            print(f"⚠️ Не удалось запустить планировщик: {e}")
+    else:
+        print("⚠️ job_queue недоступен — проверьте requirements.txt (нужен python-telegram-bot[job-queue])")
+
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("reply", reply_to_user))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(slot_callback, pattern=r"^slot:"))
+    app.add_handler(CallbackQueryHandler(universal_callback))
+
+    print("✅ Бот запущен!")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    run_bot()
