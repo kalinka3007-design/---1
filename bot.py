@@ -93,6 +93,7 @@ def build_report():
         f"• Увидели список дат: {f['dates_shown']}",
         f"•   → «Окон нет за 14 дней»: {f['no_slots_14days']}",
         f"• Увидели времена: {f['times_shown']}",
+        f"•   → Выбрали время: {f['time_clicked']}",
         "",
         "🔥 Топ-3 категории:",
         fmt_top_categories(),
