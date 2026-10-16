@@ -25,10 +25,14 @@ from content import (
     chat_url,
 )
 
-# --- общие хелперы и поиск окон ---
+# --- общие хелперы ---
 from utils import kb, hp, safe_edit, MAX_MSG_LEN
 from slot_finder import slot_callback, SLOT_FINDER_PREFIX
 from dikidi_client import service_id_from_url
+
+# --- статистика ---
+import stats_store
+from stats_store import stats, MSK
 
 # ==============================================
 # ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ
@@ -44,73 +48,12 @@ ADMIN_ID = int(ADMIN_CHAT_ID) if ADMIN_CHAT_ID else None
 PREP_SECTIONS = ("epilation", "laser", "depilation")
 MAX_CALLBACK_LEN = 60
 
-MSK = datetime.timezone(datetime.timedelta(hours=3))
 REPORT_TIME = datetime.time(hour=10, minute=0, tzinfo=MSK)
 
+
 # ==============================================
-# СТАТИСТИКА
+# ОТЧЁТ
 # ==============================================
-stats = {
-    "starts": 0,
-    "clicks": 0,
-    "funnel": {"main_menu": 0, "category": 0, "service": 0},
-    "categories": {},
-    "admin_requests": 0,
-    "subscriptions": 0,
-    "dikidi_shown": 0,
-    "started_at": datetime.datetime.now(MSK),
-}
-
-STATS_FILE = os.getenv("STATS_FILE", "stats.json")
-
-
-def save_stats():
-    try:
-        payload = dict(stats)
-        payload["started_at"] = stats["started_at"].isoformat()
-        with open(STATS_FILE, "w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False)
-    except Exception as exc:
-        print(f"⚠️ Не удалось сохранить статистику: {exc}")
-
-
-def load_stats():
-    try:
-        with open(STATS_FILE, "r", encoding="utf-8") as file:
-            saved = json.load(file)
-        for key in ("starts", "clicks", "admin_requests", "subscriptions", "dikidi_shown"):
-            if isinstance(saved.get(key), int) and saved[key] >= 0:
-                stats[key] = saved[key]
-        if isinstance(saved.get("funnel"), dict):
-            for key in stats["funnel"]:
-                value = saved["funnel"].get(key)
-                if isinstance(value, int) and value >= 0:
-                    stats["funnel"][key] = value
-        if isinstance(saved.get("categories"), dict):
-            stats["categories"] = {str(k): int(v) for k, v in saved["categories"].items()
-                                    if isinstance(v, int) and v >= 0}
-        if saved.get("started_at"):
-            stats["started_at"] = datetime.datetime.fromisoformat(saved["started_at"])
-    except FileNotFoundError:
-        pass
-    except Exception as exc:
-        print(f"⚠️ Не удалось загрузить статистику: {exc}")
-
-
-def reset_stats():
-    stats["starts"] = 0
-    stats["clicks"] = 0
-    stats["funnel"] = {"main_menu": 0, "category": 0, "service": 0}
-    stats["categories"] = {}
-    stats["admin_requests"] = 0
-    stats["subscriptions"] = 0
-    stats["dikidi_shown"] = 0
-    stats["started_at"] = datetime.datetime.now(MSK)
-    save_stats()
-
-
-load_stats()
-
 
 def fmt_top_categories():
     if not stats["categories"]:
@@ -123,11 +66,14 @@ def fmt_top_categories():
         "cosmetology": "🔹 Эстетика лица",
     }
     items = sorted(stats["categories"].items(), key=lambda x: -x[1])[:3]
-    return "\n".join(f"{i}. {title_map.get(c, c)} — {n}" for i, (c, n) in enumerate(items, 1))
+    return "\n".join(
+        f"{i}. {title_map.get(c, c)} — {n}" for i, (c, n) in enumerate(items, 1)
+    )
 
 
 def build_report():
     now = datetime.datetime.now(MSK)
+    f = stats["funnel"]
     lines = [
         "📊 Отчёт по боту MintGlow",
         f"за {now.strftime('%d.%m.%Y')}",
@@ -136,17 +82,25 @@ def build_report():
         f"• Открытий бота (/start): {stats['starts']}",
         f"• Нажатий кнопок: {stats['clicks']}",
         "",
-        "📈 Воронка:",
-        f"• Открыли главное меню: {stats['funnel']['main_menu']}",
-        f"• Выбрали категорию: {stats['funnel']['category']}",
-        f"• Дошли до услуги: {stats['funnel']['service']}",
-        f"• Открыли проверку свободных окон: {stats['dikidi_shown']}",
+        "🎯 Воронка (обе ветки):",
+        f"• Открыли развилку «Хочу записаться»: {f['booking_choice']}",
+        f"•   → 📋 Выбрать услугу: {f['services_branch']}",
+        f"•   → 👩 Выбрать мастера: {f['masters_branch']}",
+        f"• Выбрали мастера: {f['master']}",
+        f"• Выбрали категорию: {f['category']}",
+        f"• Дошли до услуги: {f['service']}",
+        f"• Выбрали мастера для услуги: {f['masters_for_service']}",
+        f"• Увидели список дат: {f['dates_shown']}",
+        f"•   → «Окон нет за 14 дней»: {f['no_slots_14days']}",
+        f"• Увидели времена: {f['times_shown']}",
         "",
         "🔥 Топ-3 категории:",
         fmt_top_categories(),
         "",
         f"📦 Показов экрана абонемента: {stats['subscriptions']}",
-        f"💬 Обращений к админу: {stats['admin_requests']}",
+        "💬 Обращений к админу:",
+        f"•   Запись/абонемент: {stats['admin_requests_booking']}",
+        f"•   Остальные вопросы: {stats['admin_requests_other']}",
     ]
     return "\n".join(lines)
 
@@ -157,12 +111,12 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
         return
     if stats["starts"] == 0 and stats["clicks"] == 0:
         print("⚠️ Отчёт пустой — не отправляем")
-        reset_stats()
+        stats_store.reset()
         return
     try:
         await context.bot.send_message(chat_id=ADMIN_ID, text=build_report())
         print("✅ Отчёт отправлен")
-        reset_stats()
+        stats_store.reset()
     except Exception as e:
         print(f"❌ Ошибка отправки отчёта: {e}")
 
@@ -224,6 +178,7 @@ def _back_title_for(code):
 # ==============================================
 
 async def notify_admin(update, context, tag="", extra=""):
+    """Уведомление из свободного текста (handle_message). Считаем как 'other'."""
     if not ADMIN_ID:
         return False
     user = update.effective_user
@@ -242,13 +197,18 @@ async def notify_admin(update, context, tag="", extra=""):
                 f"➡️ Ответить: /reply {user.id} [текст]"
             )
         )
+        stats_store.bump("admin_requests_other")
+        stats_store.save()
         return True
     except Exception as e:
         print(f"❌ Ошибка отправки: {e}")
         return False
 
 
-async def notify_admin_button(update, context, tag, extra=""):
+async def notify_admin_button(update, context, tag, extra="", kind="other"):
+    """Уведомление из inline-кнопок.
+    kind='booking' — заявки на абонемент / запись
+    kind='other'   — прочие inline-уведомления"""
     if not ADMIN_ID:
         return
     query = update.callback_query
@@ -267,8 +227,11 @@ async def notify_admin_button(update, context, tag, extra=""):
                 f"➡️ Ответить: /reply {user.id} [текст]"
             )
         )
-        stats["admin_requests"] += 1
-        save_stats()
+        if kind == "booking":
+            stats_store.bump("admin_requests_booking")
+        else:
+            stats_store.bump("admin_requests_other")
+        stats_store.save()
     except Exception as e:
         print(f"❌ Ошибка: {e}")
 
@@ -317,15 +280,15 @@ MAIN_TEXT = (
 
 
 async def start_command(update, context):
-    stats["starts"] += 1
-    stats["funnel"]["main_menu"] += 1
-    save_stats()
+    stats_store.bump("starts")
+    stats_store.bump("funnel.main_menu")
+    stats_store.save()
     await update.message.reply_text(MAIN_TEXT, reply_markup=main_menu_keyboard())
 
 
 async def show_main_menu(update, context):
-    stats["funnel"]["main_menu"] += 1
-    save_stats()
+    stats_store.bump("funnel.main_menu")
+    stats_store.save()
     if update.callback_query:
         await safe_edit(update.callback_query, context, MAIN_TEXT, main_menu_keyboard())
     else:
@@ -341,8 +304,8 @@ async def universal_callback(update, context):
     data = query.data
     print(f"🔘 {data}")
 
-    stats["clicks"] += 1
-    save_stats()
+    stats_store.bump("clicks")
+    stats_store.save()
 
     try:
         await query.answer()
@@ -354,6 +317,8 @@ async def universal_callback(update, context):
             await show_main_menu(update, context)
             return
         if data == "main:booking":
+            stats_store.bump("funnel.booking_choice")
+            stats_store.save()
             await show_booking(update, context)
             return
         if data == "main:prep":
@@ -396,12 +361,12 @@ async def universal_callback(update, context):
             "notify:subscription":"📦 АБОНЕМЕНТ",
         }
         if data in triggers:
-            await notify_admin_button(update, context, triggers[data])
+            await notify_admin_button(update, context, triggers[data], kind="other")
             return
 
         if data.startswith("sub_calc:"):
-            stats["subscriptions"] += 1
-            save_stats()
+            stats_store.bump("subscriptions")
+            stats_store.save()
             await show_subscription_calc(update, context)
             return
         if data.startswith("buy:"):
@@ -471,6 +436,8 @@ async def booking_callback(update, context):
 
     # --- Развилка: список категорий ---
     if data == "book:start_services":
+        stats_store.bump("funnel.services_branch")
+        stats_store.save()
         keyboard = []
         for code, cat in BOOKING.items():
             keyboard.append([InlineKeyboardButton(cat["title"], callback_data=f"book:{code}")])
@@ -491,12 +458,10 @@ async def booking_callback(update, context):
             await safe_edit(query, context, "⚠️ Раздел не найден.")
             return
 
-        stats["funnel"]["category"] += 1
-        save_stats()
-        stats["categories"][code] = stats["categories"].get(code, 0) + 1
-        save_stats()
+        stats_store.bump("funnel.category")
+        stats_store.bump_category(code)
+        stats_store.save()
 
-        # Основные ряды: группы (sub) + прямые услуги (services)
         rows = []
         if "sub" in cat:
             for sub in cat["sub"]:
@@ -507,11 +472,9 @@ async def booking_callback(update, context):
                 rows.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
                                                    callback_data=f"srv:{code}:{i}")])
 
-        # Дополнительные кнопки
         if code in PREP_SECTIONS:
             rows.append([InlineKeyboardButton("📚 Как подготовиться",
                                                 callback_data=f"prep:{code}")])
-        # Назад — на 1 уровень вверх (к списку категорий)
         rows.append([InlineKeyboardButton("◀️ К категориям", callback_data="book:start_services")])
         rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
 
@@ -549,7 +512,6 @@ async def booking_callback(update, context):
         if parent_code in PREP_SECTIONS:
             rows.append([InlineKeyboardButton("📚 Как подготовиться",
                                                 callback_data=f"prep:{parent_code}")])
-        # Назад — на 1 уровень вверх (к категории)
         rows.append([InlineKeyboardButton(f"◀️ К {parent['title']}",
                                             callback_data=f"book:{parent_code}")])
         rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
@@ -585,7 +547,6 @@ async def booking_callback(update, context):
         if parent_code in PREP_SECTIONS:
             rows.append([InlineKeyboardButton("📚 Как подготовиться",
                                                 callback_data=f"prep:{parent_code}")])
-        # Назад — на 1 уровень вверх (к подкатегории)
         rows.append([InlineKeyboardButton(f"◀️ К {sub['title']}",
                                             callback_data=f"sub:{parent_code}:{sub_code}")])
         rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
@@ -607,8 +568,8 @@ async def booking_callback(update, context):
         parts = data.split(":")
         code, idx = parts[1], int(parts[2])
         s = BOOKING[code]["services"][idx]
-        stats["funnel"]["service"] += 1
-        save_stats()
+        stats_store.bump("funnel.service")
+        stats_store.save()
         await show_service_result(
             query, context, s,
             service_callback=data,
@@ -628,8 +589,8 @@ async def booking_callback(update, context):
         parent = BOOKING[parent_code]
         sub = next(s for s in parent["sub"] if s["code"] == sub_code)
         s = sub["services"][idx]
-        stats["funnel"]["service"] += 1
-        save_stats()
+        stats_store.bump("funnel.service")
+        stats_store.save()
         await show_service_result(
             query, context, s,
             service_callback=data,
@@ -650,8 +611,8 @@ async def booking_callback(update, context):
         sub = next(s for s in parent["sub"] if s["code"] == sub_code)
         sub2 = next(s for s in sub["sub"] if s["code"] == sub2_code)
         s = sub2["services"][idx]
-        stats["funnel"]["service"] += 1
-        save_stats()
+        stats_store.bump("funnel.service")
+        stats_store.save()
         await show_service_result(
             query, context, s,
             service_callback=data,
@@ -665,8 +626,7 @@ async def booking_callback(update, context):
 
 async def show_service_result(query, context, service, service_callback,
                               back_callback, back_title, parent_code, breadcrumb):
-    """Карточка услуги. Запись — только через администратора.
-    Кнопка «Проверить свободные окна» ведёт в slot-ветку."""
+    """Карточка услуги. Запись — только через администратора."""
     sid = service_id_from_url(service.get("url", ""))
 
     prep_cb = None
@@ -693,8 +653,6 @@ async def show_service_result(query, context, service, service_callback,
         if len(msrv_cb.encode("utf-8")) <= MAX_CALLBACK_LEN:
             keyboard.append([InlineKeyboardButton("🔎 Проверить свободные окна",
                                                    callback_data=msrv_cb)])
-            stats["dikidi_shown"] += 1
-            save_stats()
     else:
         text = (
             f"✅ {service['name']} — {service['price']}\n\n"
@@ -794,7 +752,7 @@ async def process_buy_subscription(update, context):
         f"🔢 Количество: {count} процедур\n"
         f"💰 Сумма: {format_money(total)} ₽"
     )
-    await notify_admin_button(update, context, "📦 АБОНЕМЕНТ", extra)
+    await notify_admin_button(update, context, "📦 АБОНЕМЕНТ", extra, kind="booking")
 
     message_text = (
         f"Хочу приобрести абонемент на {parent_label} "
@@ -824,9 +782,7 @@ async def process_buy_subscription(update, context):
         hp("📅 Хочу записаться → Абонемент → Покупка", text),
         kb(*keyboard)
     )
-
-
-# ==============================================
+    # ==============================================
 # 2. ПОДГОТОВКА
 # ==============================================
 
@@ -1326,6 +1282,8 @@ async def handle_message(update, context):
     text_lower = user_text.lower()
 
     if any(k in text_lower for k in ["записаться", "запись", "запишите"]):
+        stats_store.bump("funnel.booking_choice")
+        stats_store.save()
         keyboard = [
             [InlineKeyboardButton("📋 Выбрать услугу",  callback_data="book:start_services")],
             [InlineKeyboardButton("👩 Выбрать мастера", callback_data="slot:start")],
