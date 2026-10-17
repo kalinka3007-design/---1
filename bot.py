@@ -29,7 +29,7 @@ from content import (
 from utils import kb, hp, safe_edit, MAX_MSG_LEN
 from slot_finder import (
     slot_callback, SLOT_FINDER_PREFIX,
-    _cart_count, _cart_rows,
+    _cart_count, _cart_rows, _plural_services,
 )
 from dikidi_client import service_id_from_url
 
@@ -342,7 +342,19 @@ async def universal_callback(update, context):
 
     try:
         if data == "main:menu":
-            # Очищаем корзину и 4hands state
+            if _cart_count(context) > 0:
+                n = _cart_count(context)
+                text = (f"🛍️ У вас непустая корзина ({n} {_plural_services(n)}).\n\n"
+                        "При переходе в главное меню корзина очистится.")
+                await safe_edit(query, context, text,
+                                kb([InlineKeyboardButton("✅ Да, в главное меню",
+                                                          callback_data="main:menu_confirm")],
+                                   [InlineKeyboardButton("◀️ Нет, остаться",
+                                                          callback_data="slot:cart_view")]))
+                return
+            await show_main_menu(update, context)
+            return
+        if data == "main:menu_confirm":
             context.user_data.pop("carts", None)
             context.user_data.pop("cart_updated_at", None)
             for k in ("4h_all_options", "4h_virtual", "4h_service_name",

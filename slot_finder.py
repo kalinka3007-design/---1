@@ -285,6 +285,8 @@ def _cart_count(context) -> int:
 def _cart_add(context, master_id: str, master_name: str, service: dict) -> tuple[bool, str]:
     """Добавить услугу. Возвращает (ok, reason)."""
     carts = _cart_get(context)
+    if master_id not in carts and len(carts) >= 2:
+        return False, "max_carts"
     cart = carts.setdefault(master_id, {
         "master_name": master_name,
         "services": [],
@@ -669,6 +671,14 @@ async def _render_4h_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append(f"Найдено вариантов: {len(options)} (на {n_dates} датах)")
     if len(all_opts) < MAX_4H_OPTIONS:
         lines.append(f"Поиск расширен на {context.user_data.get('4h_searched_days', 30)} дней.")
+    if filter_mid:
+        lines.append("")
+        if reason == "context":
+            lines.append("Показываем пары, где участвует этот мастер. "
+                         "Нажмите «🔍 Показать все пары», если хотите увидеть других.")
+        else:
+            lines.append("Показываем пары с этим мастером. "
+                         "Нажмите «🔍 Показать все пары», чтобы увидеть всех.")
     lines.append("")
 
     for i, o in enumerate(options, 1):
@@ -790,9 +800,9 @@ async def _render_4h_no_options(update: Update, context: ContextTypes.DEFAULT_TY
         )
     elif virtual_code == "4hands_3h":
         body = (
-            "⚠️ На ближайшие 37 дней не нашлось времени, когда два мастера "
-            "свободны одновременно на 3 часа.\n\n"
-            "Но есть варианты на 2 часа — их проще совместить."
+            "⚠️ На 3 часа не нашлось времени, когда два мастера свободны одновременно.\n\n"
+            "3 часа — длинный сеанс, два мастера редко свободны одновременно. "
+            "На 2 часа найти легче — их проще совместить."
         )
     else:
         body = (
@@ -1203,22 +1213,52 @@ async def slot_choose_service(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def _render_service_pick(update, context, s, back_cb, parent_code):
-    """Промежуточный экран: [🛍️ В корзину] [🔎 Сразу найти время]"""
+    """Промежуточный экран: «Только на эту» / «Вместе с другими»."""
     q = update.callback_query
     name = context.user_data.get("slot_master_name", "")
+    mid = context.user_data.get("slot_master_id", "")
+    cart_carts = _cart_get(context)
+    cart_cart = cart_carts.get(mid, {})
+    cart_n = len(cart_cart.get("services", []))
+    cart_time = sum((x.get("time") or 0) for x in cart_cart.get("services", []))
 
     text = f"✅ {s['name']} — {s['price']}"
     if s.get("duration"):
         text += f" · {_format_duration(s['duration'])}"
-    text += "\n\nЧто сделать?"
+    text += "\n\n"
 
-    rows = [
-        [InlineKeyboardButton("🛍️ В корзину", callback_data="slot:cart_add")],
-        [InlineKeyboardButton("🔎 Сразу найти время", callback_data="slot:direct_find")],
-        [InlineKeyboardButton("◀️ К услугам", callback_data=back_cb)],
-        [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
-    ]
-    await safe_edit(q, context, hp(f"📅 Хочу записаться → {name} → {s['name']}", text), kb(*rows))
+    at_max = len(cart_carts) >= 2 and mid not in cart_carts
+
+    if at_max:
+        text += ("⚠️ У вас уже 2 корзины для разных мастеров — это максимум.\n\n"
+                 "Завершите одну из них или очистите, чтобы добавить эту услугу.")
+        rows = [
+            [InlineKeyboardButton("🔎 Только на эту", callback_data="slot:direct_find")],
+            [InlineKeyboardButton("🛍️ Открыть корзины", callback_data="slot:cart_view")],
+            [InlineKeyboardButton("◀️ К услугам", callback_data=back_cb)],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+    else:
+        if cart_n:
+            text += (f"🛍️ В корзине уже {cart_n} {_plural_services(cart_n)}")
+            if cart_time:
+                text += f" ({_format_duration(cart_time)})"
+            text += ".\n\n"
+        text += "Как хотите записаться?\n\n"
+        text += "🔎 «Только на эту» — сразу найдём свободное время под одну услугу.\n\n"
+        text += ("🛍️ «Вместе с другими» — добавим в корзину и поищем общее время "
+                 "на все выбранные услуги за один визит.")
+        add_label = "🛍️ Вместе с другими" if not cart_n else f"🛍️ Добавить к {cart_n} услугам"
+        rows = [
+            [InlineKeyboardButton("🔎 Только на эту", callback_data="slot:direct_find")],
+            [InlineKeyboardButton(add_label, callback_data="slot:cart_add")],
+            [InlineKeyboardButton("◀️ К услугам", callback_data=back_cb)],
+            [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
+        ]
+
+    await safe_edit(q, context,
+                    hp(f"📅 Хочу записаться → {name} → {s['name']}", text),
+                    kb(*rows))
 
 
 def _parse_service_cb(data: str, context):
@@ -1509,7 +1549,8 @@ def _parse_price_int(price_str) -> int:
 async def _cart_render_empty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     text = ("🛍️ Корзина пуста.\n\n"
-            "Добавьте услуги из меню и возвращайтесь.")
+            "Как это работает: соберите 2–3 услуги одного мастера — "
+            "мы найдём общее время, чтобы сделать всё за один визит.")
     rows = [
         [InlineKeyboardButton("👩 К выбору мастера", callback_data="slot:start")],
         [InlineKeyboardButton("📋 К выбору услуги", callback_data="book:start_services")],
@@ -1616,25 +1657,23 @@ async def _cart_render_one(update: Update, context: ContextTypes.DEFAULT_TYPE, m
     rows = []
     for sid in order:
         g = groups[sid]
+        short_name = g["name"] if len(g["name"]) <= 35 else g["name"][:32] + "…"
         if g["count"] == 1:
-            label = f"✕ Убрать: {g['name']}"
+            label = f"✕ Убрать: {short_name}"
         else:
-            label = f"✕ Убрать одну: {g['name']}"
+            label = f"✕ Убрать одну: {short_name}"
         cb = f"slot:cart_remove:{mid}:{sid}"
         if len(cb.encode("utf-8")) <= 64:
-            rows.append([InlineKeyboardButton(label[:60], callback_data=cb)])
+            rows.append([InlineKeyboardButton(label, callback_data=cb)])
 
     rows.append([InlineKeyboardButton("🔎 Найти время",
                                        callback_data=f"slot:cart_find:{mid}")])
     if n_total < CART_MAX_SERVICES:
         rows.append([InlineKeyboardButton("➕ Добавить услугу",
                                            callback_data=f"slot:cart_add_more:{mid}")])
-    if n_total >= 2:
-        rows.append([InlineKeyboardButton("↩️ Убрать последнюю",
-                                           callback_data=f"slot:cart_remove_last:{mid}")])
     rows.append([InlineKeyboardButton("🗑 Очистить корзину",
                                        callback_data=f"slot:cart_clear:{mid}")])
-    rows.append([InlineKeyboardButton("◀️ К мастерам", callback_data="slot:start")])
+    rows.append([InlineKeyboardButton("◀️ К выбору способа", callback_data="main:booking")])
     rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
 
     await safe_edit(q, context, hp(f"🛍️ Корзина — {mname}", "\n".join(lines)), kb(*rows))
@@ -1658,9 +1697,9 @@ async def _render_cart_added(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     rows = [
         [InlineKeyboardButton(f"🛍️ Корзина ({n_total})", callback_data="slot:cart_view")],
-        [InlineKeyboardButton("➕ Добавить ещё",
+        [InlineKeyboardButton(f"➕ Добавить ещё {mname}",
                                callback_data=f"slot:cart_add_more:{mid}")],
-        [InlineKeyboardButton("◀️ К услугам", callback_data=back_cb)],
+        [InlineKeyboardButton("◀️ К выбору способа", callback_data="main:booking")],
         [InlineKeyboardButton("🏠 В начало", callback_data="main:menu")],
     ]
     await safe_edit(q, context, hp("🛍️ Корзина", text), kb(*rows))
@@ -1693,7 +1732,10 @@ async def slot_cart_add_from_state(update: Update, context: ContextTypes.DEFAULT
     })
 
     if not ok:
-        if reason == "limit":
+        if reason == "max_carts":
+            text = ("⚠️ У вас уже 2 корзины для разных мастеров — это максимум.\n\n"
+                    "Завершите одну из них или очистите, чтобы добавить эту услугу.")
+        elif reason == "limit":
             text = (f"⚠️ В корзине уже {CART_MAX_SERVICES} услуги — "
                     f"больше не влезет в один визит.\n\n"
                     f"Услугу «{sname}» не добавили.")
@@ -2014,7 +2056,7 @@ async def _render_dates_cart(q, context, mid, sids, days, label, mname, had_erro
     context.user_data["slot_cart_sids"] = sids
     context.user_data["slot_cart_label"] = label
 
-    header = f"👩 {mname}\n🛍️ {label}"
+    header = f"👩 {mname}\n🛍️ {label}\nИщем окно на всё сразу."
 
     stats_store.bump("funnel.dates_shown")
     stats_store.save()
@@ -2198,9 +2240,8 @@ async def slot_cart_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"\n⏱ Общая длительность: {_format_duration(total_time)}\n"
 
     text += ("\n💰 Стоимость: уточните у администратора при подтверждении.\n\n"
-             "Нажмите кнопку ниже — откроется чат с администратором, "
-             "сообщение с заявкой на все услуги уже будет готово. "
-             "Останется только отправить его.")
+             "Важно: кнопка ниже откроет чат с администратором. "
+             "Сообщение с заявкой уже готово — нажмите «Отправить» в чате.")
 
     keyboard = [
         [InlineKeyboardButton("📩 Отправить заявку администратору", url=admin_url)],
