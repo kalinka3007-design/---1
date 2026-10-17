@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Union
 from urllib.parse import urlencode
 
 import httpx
@@ -16,12 +16,14 @@ BASE_URL = "https://beauty.dikidi.net"
 # ==============================================
 # masters      — 30 минут
 # cats:<mid>   — 30 минут
-# slots:<sid>:<mid>:<iso>  — 5 минут
+# slots:<sids>:<mid>:<iso>  — 5 минут
 MASTERS_TTL = 1800
 CATS_TTL = 1800
 SLOTS_TTL = 300
 
 _CACHE: dict[str, tuple[Any, float]] = {}
+
+ServiceIds = Union[str, list[str]]
 
 
 def _cache_get(key: str, ttl: float):
@@ -41,6 +43,13 @@ def _cache_put(key: str, value: Any) -> None:
 
 def clear_cache() -> None:
     _CACHE.clear()
+
+
+def _normalize_sids(service_ids: ServiceIds) -> list[str]:
+    """Приводит одиночный ID или список к списку строк."""
+    if isinstance(service_ids, str):
+        return [service_ids]
+    return [str(x) for x in service_ids]
 
 
 # ==============================================
@@ -109,7 +118,12 @@ class DikidiClient:
                 for s in raw_services:
                     if isinstance(s, dict) and s.get("id") is not None and s.get("name"):
                         sid = str(s["id"])
-                        services[sid] = {"id": sid, "name": str(s["name"])}
+                        services[sid] = {
+                            "id": sid,
+                            "name": str(s["name"]),
+                            "time": s.get("time"),          # длительность в минутах (может быть None)
+                            "price": s.get("price") or s.get("cost"),
+                        }
             if services:
                 cid = str(cat.get("id", rid))
                 if cid in out:
@@ -129,14 +143,23 @@ class DikidiClient:
             out.update(cat["services"])
         return out
 
-    async def get_dates(self, service_id: str, master_id: str, date_from: date, date_to: date) -> list[str]:
-        q = urlencode({
-            "company_id": self.company_id,
-            "services_id[]": service_id,
-            "master_id": master_id,
-            "date_from": date_from.isoformat(),
-            "date_to": date_to.isoformat(),
-        })
+    async def get_dates(
+        self,
+        service_ids: ServiceIds,
+        master_id: str,
+        date_from: date,
+        date_to: date,
+    ) -> list[str]:
+        sids = _normalize_sids(service_ids)
+        params: list[tuple[str, str]] = [
+            ("company_id", self.company_id),
+            ("master_id", master_id),
+            ("date_from", date_from.isoformat()),
+            ("date_to", date_to.isoformat()),
+        ]
+        for sid in sids:
+            params.append(("services_id[]", sid))
+        q = urlencode(params)
         d = await self._get_json(f"{BASE_URL}/en/ajax/newrecord/get_dates_true/?{q}")
         raw = d.get("dates_true")
         if not isinstance(raw, list):
@@ -145,28 +168,43 @@ class DikidiClient:
             return []
         return [m.group(0) for x in raw if (m := re.search(r"\d{4}-\d{2}-\d{2}", str(x)))]
 
-    async def get_times(self, target_date: str, service_id: str, master_id: str) -> list[str]:
-        q = urlencode({
-            "company_id": self.company_id,
-            "date": target_date,
-            "services_id[]": service_id,
-            "master_id": master_id,
-            "is_show_all_times": "0",
-        })
+    async def get_times(
+        self,
+        target_date: str,
+        service_ids: ServiceIds,
+        master_id: str,
+    ) -> list[str]:
+        sids = _normalize_sids(service_ids)
+        params: list[tuple[str, str]] = [
+            ("company_id", self.company_id),
+            ("date", target_date),
+            ("master_id", master_id),
+            ("is_show_all_times", "0"),
+        ]
+        for sid in sids:
+            params.append(("services_id[]", sid))
+        q = urlencode(params)
         d = await self._get_json(f"{BASE_URL}/ru/ajax/newrecord/get_masters/?{q}")
         raw = d.get("times", {}).get(str(master_id), [])
         return [str(x) for x in raw] if isinstance(raw, list) else []
 
-    async def available_slots(self, service_id: str, master_id: str, target_date: date) -> list[datetime]:
-        key = f"slots:{service_id}:{master_id}:{target_date.isoformat()}"
+    async def available_slots(
+        self,
+        service_ids: ServiceIds,
+        master_id: str,
+        target_date: date,
+    ) -> list[datetime]:
+        sids = _normalize_sids(service_ids)
+        # Ключ кэша: порядок sid не важен
+        key = f"slots:{','.join(sorted(sids))}:{master_id}:{target_date.isoformat()}"
         cached = _cache_get(key, SLOTS_TTL)
         if cached is not None:
             return cached
 
-        dates = await self.get_dates(service_id, master_id, target_date, target_date)
+        dates = await self.get_dates(sids, master_id, target_date, target_date)
         slots: list[datetime] = []
         for ds in dates:
-            for raw in await self.get_times(ds, service_id, master_id):
+            for raw in await self.get_times(ds, sids, master_id):
                 m = re.search(r"(\d{4}-\d{2}-\d{2})[ T].*?(\d{2}):(\d{2})", raw)
                 if not m:
                     m = re.search(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})", raw)
