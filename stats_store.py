@@ -29,6 +29,14 @@ stats = {
         "times_shown": 0,           # slot:date:* (показали времена)
         "time_clicked": 0,          # slot:time:* (выбрали конкретное время)
         "no_slots_14days": 0,       # «окон нет за 14 дней»
+        # --- 4hands ---
+        "4hands_used": 0,           # открыли ветку «4 руки»
+        "4hands_completed": 0,      # дошли до подтверждения
+        # --- Корзина ---
+        "cart_used": 0,             # открыли экран корзины
+        "cart_added": 0,            # добавили услугу
+        "cart_removed": 0,          # убрали услугу
+        "cart_multi_search": 0,     # искали время для 2+ услуг (мультизапрос)
     },
     "categories": {},
     "admin_requests_booking": 0,    # заявки на запись (абонементы)
