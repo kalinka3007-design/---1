@@ -27,7 +27,10 @@ from content import (
 
 # --- общие хелперы ---
 from utils import kb, hp, safe_edit, MAX_MSG_LEN
-from slot_finder import slot_callback, SLOT_FINDER_PREFIX
+from slot_finder import (
+    slot_callback, SLOT_FINDER_PREFIX,
+    _cart_count, _cart_rows,
+)
 from dikidi_client import service_id_from_url
 
 # --- статистика ---
@@ -95,6 +98,16 @@ def build_report():
         f"• Увидели времена: {f['times_shown']}",
         f"•   → Выбрали время: {f['time_clicked']}",
         "",
+        "🤝 В 4 руки:",
+        f"• Открытий: {f['4hands_used']}",
+        f"• До подтверждения: {f['4hands_completed']}",
+        "",
+        "🛍️ Корзина:",
+        f"• Открытий: {f['cart_used']}",
+        f"• Добавлено услуг: {f['cart_added']}",
+        f"• Удалено услуг: {f['cart_removed']}",
+        f"• Мультипоиск (2+ услуг): {f['cart_multi_search']}",
+        "",
         "🔥 Топ-3 категории:",
         fmt_top_categories(),
         "",
@@ -120,6 +133,14 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
         stats_store.reset()
     except Exception as e:
         print(f"❌ Ошибка отправки отчёта: {e}")
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручной отчёт по команде /stats — только для админа."""
+    if not ADMIN_ID or update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("У вас нет прав.")
+        return
+    await update.message.reply_text(build_report())
 
 
 # ==============================================
@@ -207,9 +228,6 @@ async def notify_admin(update, context, tag="", extra=""):
 
 
 async def notify_admin_button(update, context, tag, extra="", kind="other"):
-    """Уведомление из inline-кнопок.
-    kind='booking' — заявки на абонемент / запись
-    kind='other'   — прочие inline-уведомления"""
     if not ADMIN_ID:
         return
     query = update.callback_query
@@ -261,8 +279,8 @@ async def reply_to_user(update, context):
 # ГЛАВНОЕ МЕНЮ
 # ==============================================
 
-def main_menu_keyboard():
-    return kb(
+def main_menu_keyboard(user_id=None):
+    rows = [
         [InlineKeyboardButton("📅 Хочу записаться",         callback_data="main:booking")],
         [InlineKeyboardButton("📚 Подготовка к эпиляции",   callback_data="main:prep")],
         [InlineKeyboardButton("💆 Уход после эпиляции",     callback_data="main:after")],
@@ -270,7 +288,11 @@ def main_menu_keyboard():
         [InlineKeyboardButton("🎁 Акции и бонусы",          callback_data="main:promo")],
         [InlineKeyboardButton("ℹ️ О студии",                callback_data="main:about")],
         [InlineKeyboardButton("✍️ Задать вопрос",           callback_data="main:ask")],
-    )
+    ]
+    # Только админу
+    if ADMIN_ID and user_id == ADMIN_ID:
+        rows.append([InlineKeyboardButton("📊 Статистика", callback_data="main:stats")])
+    return kb(*rows)
 
 
 MAIN_TEXT = (
@@ -284,16 +306,21 @@ async def start_command(update, context):
     stats_store.bump("starts")
     stats_store.bump("funnel.main_menu")
     stats_store.save()
-    await update.message.reply_text(MAIN_TEXT, reply_markup=main_menu_keyboard())
+    await update.message.reply_text(
+        MAIN_TEXT,
+        reply_markup=main_menu_keyboard(update.effective_user.id),
+    )
 
 
 async def show_main_menu(update, context):
     stats_store.bump("funnel.main_menu")
     stats_store.save()
+    user_id = update.effective_user.id if update.effective_user else None
+    markup = main_menu_keyboard(user_id)
     if update.callback_query:
-        await safe_edit(update.callback_query, context, MAIN_TEXT, main_menu_keyboard())
+        await safe_edit(update.callback_query, context, MAIN_TEXT, markup)
     else:
-        await update.message.reply_text(MAIN_TEXT, reply_markup=main_menu_keyboard())
+        await update.message.reply_text(MAIN_TEXT, reply_markup=markup)
 
 
 # ==============================================
@@ -315,7 +342,21 @@ async def universal_callback(update, context):
 
     try:
         if data == "main:menu":
+            # Очищаем корзину и 4hands state
+            context.user_data.pop("carts", None)
+            context.user_data.pop("cart_updated_at", None)
+            for k in ("4h_all_options", "4h_virtual", "4h_service_name",
+                      "4h_filter_mid", "4h_filter_reason", "4h_context_name",
+                      "4h_selected", "4h_searched_days"):
+                context.user_data.pop(k, None)
             await show_main_menu(update, context)
+            return
+        if data == "main:stats":
+            if not ADMIN_ID or query.from_user.id != ADMIN_ID:
+                return
+            await safe_edit(query, context, build_report(),
+                            kb([InlineKeyboardButton("🏠 В начало",
+                                                       callback_data="main:menu")]))
             return
         if data == "main:booking":
             stats_store.bump("funnel.booking_choice")
@@ -418,16 +459,17 @@ async def universal_callback(update, context):
 async def show_booking(update, context):
     """Развилка: старая ветка (услуга первой) или новая (мастер первым)."""
     query = update.callback_query
-    keyboard = [
+    rows = [
         [InlineKeyboardButton("📋 Выбрать услугу",  callback_data="book:start_services")],
         [InlineKeyboardButton("👩 Выбрать мастера", callback_data="slot:start")],
-        [InlineKeyboardButton("🏠 В начало",        callback_data="main:menu")],
     ]
+    rows.extend(_cart_rows(context))
+    rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
     await safe_edit(
         query, context,
         hp("📅 Хочу записаться",
            "📅 Хочу записаться\n\nКак вам удобнее выбрать?"),
-        kb(*keyboard)
+        kb(*rows)
     )
 
 
@@ -439,15 +481,16 @@ async def booking_callback(update, context):
     if data == "book:start_services":
         stats_store.bump("funnel.services_branch")
         stats_store.save()
-        keyboard = []
+        rows = []
         for code, cat in BOOKING.items():
-            keyboard.append([InlineKeyboardButton(cat["title"], callback_data=f"book:{code}")])
-        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="main:booking")])
-        keyboard.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
+            rows.append([InlineKeyboardButton(cat["title"], callback_data=f"book:{code}")])
+        rows.extend(_cart_rows(context))
+        rows.append([InlineKeyboardButton("◀️ Назад", callback_data="main:booking")])
+        rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
         await safe_edit(
             query, context,
             hp("📅 Хочу записаться", "📅 Выберите тип услуги:"),
-            kb(*keyboard)
+            kb(*rows)
         )
         return
 
@@ -470,12 +513,19 @@ async def booking_callback(update, context):
                                                    callback_data=f"sub:{code}:{sub['code']}")])
         if "services" in cat:
             for i, s in enumerate(cat["services"]):
-                rows.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
-                                                   callback_data=f"srv:{code}:{i}")])
+                if s.get("virtual"):
+                    cb = f"slot:4h_start:{s['virtual']}"
+                    if len(cb.encode("utf-8")) > MAX_CALLBACK_LEN:
+                        continue
+                    rows.append([InlineKeyboardButton(f"🤝 {s['name']}", callback_data=cb)])
+                else:
+                    rows.append([InlineKeyboardButton(f"{s['name']} — {s['price']}",
+                                                       callback_data=f"srv:{code}:{i}")])
 
         if code in PREP_SECTIONS:
             rows.append([InlineKeyboardButton("📚 Как подготовиться",
                                                 callback_data=f"prep:{code}")])
+        rows.extend(_cart_rows(context))
         rows.append([InlineKeyboardButton("◀️ К категориям", callback_data="book:start_services")])
         rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
 
@@ -513,6 +563,7 @@ async def booking_callback(update, context):
         if parent_code in PREP_SECTIONS:
             rows.append([InlineKeyboardButton("📚 Как подготовиться",
                                                 callback_data=f"prep:{parent_code}")])
+        rows.extend(_cart_rows(context))
         rows.append([InlineKeyboardButton(f"◀️ К {parent['title']}",
                                             callback_data=f"book:{parent_code}")])
         rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
@@ -548,6 +599,7 @@ async def booking_callback(update, context):
         if parent_code in PREP_SECTIONS:
             rows.append([InlineKeyboardButton("📚 Как подготовиться",
                                                 callback_data=f"prep:{parent_code}")])
+        rows.extend(_cart_rows(context))
         rows.append([InlineKeyboardButton(f"◀️ К {sub['title']}",
                                             callback_data=f"sub:{parent_code}:{sub_code}")])
         rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
@@ -569,6 +621,9 @@ async def booking_callback(update, context):
         parts = data.split(":")
         code, idx = parts[1], int(parts[2])
         s = BOOKING[code]["services"][idx]
+        if s.get("virtual"):
+            await slot_callback(update, context)
+            return
         stats_store.bump("funnel.service")
         stats_store.save()
         await show_service_result(
@@ -627,7 +682,7 @@ async def booking_callback(update, context):
 
 async def show_service_result(query, context, service, service_callback,
                               back_callback, back_title, parent_code, breadcrumb):
-    """Карточка услуги. Запись — только через администратора."""
+    """Карточка услуги. Запись — через администратора."""
     sid = service_id_from_url(service.get("url", ""))
 
     prep_cb = None
@@ -654,6 +709,10 @@ async def show_service_result(query, context, service, service_callback,
         if len(msrv_cb.encode("utf-8")) <= MAX_CALLBACK_LEN:
             keyboard.append([InlineKeyboardButton("🔎 Проверить свободные окна",
                                                    callback_data=msrv_cb)])
+        cart_cb = f"slot:cart_add:{sid}"
+        if len(cart_cb.encode("utf-8")) <= MAX_CALLBACK_LEN:
+            keyboard.append([InlineKeyboardButton("🛍️ В корзину",
+                                                   callback_data=cart_cb)])
     else:
         text = (
             f"✅ {service['name']} — {service['price']}\n\n"
@@ -668,6 +727,7 @@ async def show_service_result(query, context, service, service_callback,
         keyboard.append([InlineKeyboardButton("📚 Как подготовиться",
                                                 callback_data=prep_cb)])
 
+    keyboard.extend(_cart_rows(context))
     keyboard.append([InlineKeyboardButton(f"◀️ К {back_title}",
                                             callback_data=back_callback)])
     keyboard.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
@@ -783,7 +843,9 @@ async def process_buy_subscription(update, context):
         hp("📅 Хочу записаться → Абонемент → Покупка", text),
         kb(*keyboard)
     )
-    # ==============================================
+
+
+# ==============================================
 # 2. ПОДГОТОВКА
 # ==============================================
 
@@ -1285,14 +1347,15 @@ async def handle_message(update, context):
     if any(k in text_lower for k in ["записаться", "запись", "запишите"]):
         stats_store.bump("funnel.booking_choice")
         stats_store.save()
-        keyboard = [
+        rows = [
             [InlineKeyboardButton("📋 Выбрать услугу",  callback_data="book:start_services")],
             [InlineKeyboardButton("👩 Выбрать мастера", callback_data="slot:start")],
-            [InlineKeyboardButton("🏠 В начало",        callback_data="main:menu")],
         ]
+        rows.extend(_cart_rows(context))
+        rows.append([InlineKeyboardButton("🏠 В начало", callback_data="main:menu")])
         await update.message.reply_text(
             hp("📅 Хочу записаться", "📅 Хочу записаться\n\nКак вам удобнее выбрать?"),
-            reply_markup=kb(*keyboard)
+            reply_markup=kb(*rows)
         )
         return
 
@@ -1396,6 +1459,7 @@ def run_bot():
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("reply", reply_to_user))
+    app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(slot_callback, pattern=r"^slot:"))
     app.add_handler(CallbackQueryHandler(universal_callback))
